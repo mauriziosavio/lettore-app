@@ -34,7 +34,7 @@ jobs:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
 
       - name: Compila APK
-        run: cd android && chmod +x gradlew && ./gradlew assembleRelease --no-daemon
+        run: cd android && chmod +x gradlew && ./gradlew assembleRelease --no-daemon --stacktrace
         env:
           KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
           VERSION_CODE: ${{ github.run_number }}

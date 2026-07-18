@@ -7,8 +7,8 @@ android {
         applicationId "com.mauriziosavio.lettore"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode (System.getenv("VERSION_CODE") ?: "1").toInteger()
-        versionName "18.07.2"
+        versionCode = Integer.parseInt(System.getenv("VERSION_CODE") ?: "1")
+        versionName = "18.07.2"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -19,11 +19,11 @@ android {
     signingConfigs {
         release {
             // chiave iniettata dalla CI (secret KEYSTORE_B64 decodificato in lettore.p12)
-            storeFile file("lettore.p12")
-            storeType "pkcs12"
-            keyAlias "lettore"
-            storePassword System.getenv("KEYSTORE_PASS") ?: ""
-            keyPassword System.getenv("KEYSTORE_PASS") ?: ""
+            storeFile = file("lettore.p12")
+            storeType = "pkcs12"
+            keyAlias = "lettore"
+            storePassword = System.getenv("KEYSTORE_PASS") ?: ""
+            keyPassword = System.getenv("KEYSTORE_PASS") ?: ""
         }
     }
     buildTypes {
