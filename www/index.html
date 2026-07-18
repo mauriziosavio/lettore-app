@@ -189,7 +189,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.2</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.3</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -212,6 +212,7 @@
       <li><b>Tutto sul tuo dispositivo.</b>&nbsp;Il file non viene caricato da nessuna parte: lettura e voce restano in locale.</li>
       <li><b>Voce e ritmo tuoi.</b>&nbsp;Scegli la voce italiana del dispositivo e regola la velocità; tocca una frase per partire da lì.</li>
     </ul>
+    <p id="apkHint" style="margin:26px 0 0;font-size:.92rem"><a style="color:var(--accent)" href="https://mauriziosavio.github.io/lettore/scarica.html">📲 Su Android c'è anche l'app: legge pure a schermo spento — scaricala qui</a></p>
   </section>
 
   <section id="busy">
@@ -380,6 +381,7 @@ refreshVoices();
 if(CAP){ /* nell'APK la voce è quella di sistema Android: niente elenco voci web */
   voiceSel.style.display="none";
   const ve=document.querySelector(".wordmark .ver"); if(ve)ve.textContent+="·app";
+  const ah=$("apkHint"); if(ah)ah.style.display="none"; /* siamo già nell'app */
 }
 // su iPhone/iPad l'elenco voci arriva in ritardo: riprova per qualche secondo
 (function pollVoices(n){
