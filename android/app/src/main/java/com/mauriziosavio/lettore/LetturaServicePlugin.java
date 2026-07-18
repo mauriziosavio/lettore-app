@@ -8,14 +8,35 @@ import android.os.Build;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
-/** Ponte JS ⇄ servizio di lettura: LetturaService.start() / LetturaService.stop(). */
+/**
+ * Ponte JS ⇄ servizio di lettura.
+ * JS → nativo: start/setState/stop per il mini-lettore.
+ * Nativo → JS: evento "mediaAction" {azione: play|pause|next|prev} dai controlli media.
+ */
 @CapacitorPlugin(name = "LetturaService")
 public class LetturaServicePlugin extends Plugin {
+
+    private static LetturaServicePlugin instance;
+
+    @Override
+    public void load() {
+        instance = this;
+    }
+
+    static void sendAction(String azione) {
+        LetturaServicePlugin p = instance;
+        if (p != null) {
+            JSObject o = new JSObject();
+            o.put("azione", azione);
+            p.notifyListeners("mediaAction", o);
+        }
+    }
 
     @PluginMethod
     public void start(PluginCall call) {
@@ -26,12 +47,19 @@ public class LetturaServicePlugin extends Plugin {
             ActivityCompat.requestPermissions(
                 getActivity(), new String[]{Manifest.permission.POST_NOTIFICATIONS}, 9001);
         }
-        Intent i = new Intent(getContext(), ReadingService.class);
-        if (Build.VERSION.SDK_INT >= 26) {
-            getContext().startForegroundService(i);
-        } else {
-            getContext().startService(i);
-        }
+        ReadingService.update(getContext(),
+            call.getBoolean("playing", true),
+            call.getString("title", ""),
+            call.getString("sub", ""));
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void setState(PluginCall call) {
+        ReadingService.update(getContext(),
+            call.getBoolean("playing"),
+            call.getString("title"),
+            call.getString("sub"));
         call.resolve();
     }
 

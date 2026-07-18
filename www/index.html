@@ -190,7 +190,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.4</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.5</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -384,6 +384,16 @@ if(CAP){ /* nell'APK la voce è quella di sistema Android: niente elenco voci we
   voiceSel.style.display="none";
   const ve=document.querySelector(".wordmark .ver"); if(ve)ve.textContent+="·app";
   const ah=$("apkHint"); if(ah)ah.style.display="none"; /* siamo già nell'app */
+  /* comandi dal mini-lettore Android (notifica / schermata di blocco) */
+  try{
+    CAP.LetturaService.addListener("mediaAction",d=>{
+      const a=d&&d.azione;
+      if(a==="pause"){if(playing){setPlaying(false);stopSpeech();}}
+      else if(a==="play"){if(!playing&&book&&sents.length){setPlaying(true);speak(idx);}}
+      else if(a==="next")$("nextBtn").click();
+      else if(a==="prev")$("prevBtn").click();
+    });
+  }catch(e){}
 }
 // su iPhone/iPad l'elenco voci arriva in ritardo: riprova per qualche secondo
 (function pollVoices(n){
@@ -693,6 +703,10 @@ function setIndex(i,opts){
   const s=sents[idx];
   pageLbl.textContent=s&&s.page?("Pag. "+s.page+(book.numPages?" di "+book.numPages:"")):("Frase "+(idx+1)+" di "+sents.length);
   try{localStorage.setItem("lettore:pos:"+book.key,String(idx));}catch(e){}
+  if(CAP&&playing&&s&&s.page&&setIndex._np!==s.page){ /* aggiorna la pagina nel mini-lettore */
+    setIndex._np=s.page;
+    try{CAP.LetturaService.setState({sub:"Pagina "+s.page+(book.numPages?" di "+book.numPages:"")}).catch(()=>{});}catch(e){}
+  }
 }
 
 let scrollTick=false;
@@ -752,10 +766,19 @@ function holdTtsLock(){
   try{navigator.locks.request("lettore-lettura",()=>new Promise(res=>{ttsLockRelease=res;})).catch(()=>{});}catch(e){}
 }
 function dropTtsLock(){ if(ttsLockRelease){ttsLockRelease();ttsLockRelease=null;} }
+function pageSub(){
+  const s=sents[idx];
+  return s&&s.page?("Pagina "+s.page+(book&&book.numPages?" di "+book.numPages:"")):"Lettura ad alta voce";
+}
 function setPlaying(on){
   playing=on; updatePlayBtn();
-  if(CAP){ /* nell'APK ci pensa il servizio in primo piano; lo schermo può spegnersi */
-    try{if(on)CAP.LetturaService.start();else CAP.LetturaService.stop();}catch(e){}
+  if(CAP){ /* nell'APK ci pensa il servizio in primo piano; lo schermo può spegnersi.
+              In pausa il servizio resta: dal mini-lettore si può riprendere. */
+    try{
+      const o={playing:on,title:book?book.name:"Lettore",sub:pageSub()};
+      if(on){setPlaying._srv=true;CAP.LetturaService.start(o).catch(()=>{});}
+      else if(setPlaying._srv){CAP.LetturaService.setState(o).catch(()=>{});} /* mai prima del primo play */
+    }catch(e){}
   }else if(on){requestWake(); holdTtsLock(); silent.play().catch(()=>{}); startAc();}
   else{releaseWake(); dropTtsLock(); silent.pause(); stopAc();}
   if("mediaSession" in navigator)navigator.mediaSession.playbackState=on?"playing":"paused";
