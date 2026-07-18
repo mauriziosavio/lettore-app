@@ -42,7 +42,8 @@
   header{
     position:sticky; top:0; z-index:5;
     display:flex; align-items:center; gap:12px;
-    padding:10px 16px calc(10px);
+    /* --sat/--sab: rientri di sistema (barra di stato/navigazione) iniettati dall'APK */
+    padding:calc(10px + max(env(safe-area-inset-top,0px),var(--sat,0px))) 16px 10px;
     background:color-mix(in srgb, var(--paper) 88%, transparent);
     backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
     border-bottom:1px solid var(--line);
@@ -138,7 +139,7 @@
     background:var(--paper-2);
     border-top:1px solid var(--line);
     box-shadow:var(--shadow);
-    padding:12px 18px calc(12px + env(safe-area-inset-bottom));
+    padding:12px 18px calc(12px + max(env(safe-area-inset-bottom,0px),var(--sab,0px)));
   }
   .pwrap{max-width:42rem; margin:0 auto; display:grid; gap:10px}
   #bar{height:22px; display:flex; align-items:center; cursor:pointer; touch-action:none}
@@ -190,7 +191,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.5</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.6</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -384,7 +385,15 @@ if(CAP){ /* nell'APK la voce è quella di sistema Android: niente elenco voci we
   voiceSel.style.display="none";
   const ve=document.querySelector(".wordmark .ver"); if(ve)ve.textContent+="·app";
   const ah=$("apkHint"); if(ah)ah.style.display="none"; /* siamo già nell'app */
-  /* comandi dal mini-lettore Android (notifica / schermata di blocco) */
+  /* rientri di sistema (barra di stato / navigazione): l'header non deve finire sotto le icone */
+  try{
+    CAP.LetturaService.insets().then(i=>{
+      const r=document.documentElement.style;
+      r.setProperty("--sat",(i.top||0)+"px");
+      r.setProperty("--sab",(i.bottom||0)+"px");
+    }).catch(()=>{});
+  }catch(e){}
+  /* comandi dal mini-lettore Android (notifica / schermata di blocco) + battito anti-blocco */
   try{
     CAP.LetturaService.addListener("mediaAction",d=>{
       const a=d&&d.azione;
@@ -392,6 +401,12 @@ if(CAP){ /* nell'APK la voce è quella di sistema Android: niente elenco voci we
       else if(a==="play"){if(!playing&&book&&sents.length){setPlaying(true);speak(idx);}}
       else if(a==="next")$("nextBtn").click();
       else if(a==="prev")$("prevBtn").click();
+      else if(a==="tick"){
+        /* battito dal servizio nativo: se la voce è ferma da troppo, falla ripartire */
+        if(playing&&speak._watch&&Date.now()-speak._watch.t>speak._watch.est){
+          speak._watch=null; stopSpeech(); speak(idx);
+        }
+      }
     });
   }catch(e){}
 }
@@ -831,11 +846,16 @@ function speak(i){
         setTimeout(()=>{if(playing&&nv===seq)speak(i+1);},150);
       }
     },estN);
+    speak._watch={t:Date.now(),est:estN+8000}; // per il battito anti-blocco nativo
     CAP.TextToSpeech.speak({text:s.t,lang:"it-IT",rate:rate,queueStrategy:0})
       .then(()=>{if(my!==seq)return;errStreak=0;killStreak=0;advance();})
       .catch(()=>{
         if(my!==seq)return; // interrotta da un nostro stop: ignora
         clearTimeout(watchdog);
+        if(document.hidden){ // in sottofondo mai arrendersi: ritenta piano finché il motore torna
+          setTimeout(()=>{if(my===seq&&playing)speak(i);},3000);
+          return;
+        }
         if(++errStreak>=3){
           errStreak=0; setPlaying(false); stopSpeech(); setIndex(i);
           toast("La voce non riesce a partire. Tocca di nuovo ▶; se non senti nulla, controlla il volume.",6000);

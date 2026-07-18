@@ -68,4 +68,24 @@ public class LetturaServicePlugin extends Plugin {
         getContext().stopService(new Intent(getContext(), ReadingService.class));
         call.resolve();
     }
+
+    /** Rientri di sistema in px CSS (dp): {top, bottom} per non finire sotto la barra di stato. */
+    @PluginMethod
+    public void insets(PluginCall call) {
+        int top = 0, bottom = 0;
+        android.view.View v = getBridge().getWebView();
+        androidx.core.view.WindowInsetsCompat w = androidx.core.view.ViewCompat.getRootWindowInsets(v);
+        if (w != null) {
+            androidx.core.graphics.Insets si = w.getInsets(
+                androidx.core.view.WindowInsetsCompat.Type.systemBars()
+                | androidx.core.view.WindowInsetsCompat.Type.displayCutout());
+            float dens = getContext().getResources().getDisplayMetrics().density;
+            top = Math.round(si.top / dens);
+            bottom = Math.round(si.bottom / dens);
+        }
+        JSObject o = new JSObject();
+        o.put("top", top);
+        o.put("bottom", bottom);
+        call.resolve(o);
+    }
 }

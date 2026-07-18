@@ -8,8 +8,13 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.media.AudioAttributes;
+import android.media.AudioFocusRequest;
+import android.media.AudioManager;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.MediaSessionCompat;
@@ -35,9 +40,21 @@ public class ReadingService extends Service {
     private static ReadingService instance;
     private PowerManager.WakeLock wakeLock;
     private MediaSessionCompat session;
+    private AudioFocusRequest afr;
     private boolean playing = true;
     private String title = "Lettore";
     private String sub = "Lettura ad alta voce";
+    /* Battito verso il WebView: se la voce si è bloccata, il JS la fa ripartire.
+       Parte dal nativo perché i timer JS in background non sono affidabili. */
+    private final Handler heart = new Handler(Looper.getMainLooper());
+    private final Runnable beat = new Runnable() {
+        @Override public void run() {
+            if (playing) {
+                LetturaServicePlugin.sendAction("tick");
+                heart.postDelayed(this, 20000);
+            }
+        }
+    };
 
     /** Aggiorna lo stato del mini-lettore; avvia il servizio se non è in piedi. */
     static void update(Context c, Boolean playing, String title, String sub) {
@@ -149,6 +166,24 @@ public class ReadingService extends Service {
         // CPU sveglia solo mentre legge davvero
         if (playing) wakeLock.acquire(6 * 60 * 60 * 1000L); // limite di sicurezza: 6 ore
         else if (wakeLock.isHeld()) wakeLock.release();
+        // focus audio: dichiara ad Android una riproduzione vera (mette in pausa altra musica)
+        AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
+        if (Build.VERSION.SDK_INT >= 26) {
+            if (playing) {
+                if (afr == null) {
+                    afr = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                        .setAudioAttributes(new AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+                        .setOnAudioFocusChangeListener(f -> { }).build();
+                }
+                am.requestAudioFocus(afr);
+            } else if (afr != null) {
+                am.abandonAudioFocusRequest(afr);
+            }
+        }
+        heart.removeCallbacks(beat);
+        if (playing) heart.postDelayed(beat, 20000);
     }
 
     @Override
@@ -161,6 +196,10 @@ public class ReadingService extends Service {
     @Override
     public void onDestroy() {
         instance = null;
+        heart.removeCallbacks(beat);
+        if (Build.VERSION.SDK_INT >= 26 && afr != null) {
+            ((AudioManager) getSystemService(AUDIO_SERVICE)).abandonAudioFocusRequest(afr);
+        }
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (session != null) { session.setActive(false); session.release(); }
         super.onDestroy();
