@@ -53,6 +53,7 @@
   }
   .wordmark em{font-style:normal;color:var(--accent)}
   .wordmark .ver{font-size:.58rem;font-weight:400;color:var(--muted);margin-left:7px;letter-spacing:.4px;vertical-align:2px}
+  .wordmark{cursor:pointer;-webkit-tap-highlight-color:transparent}
   #bookTitle{
     flex:1; min-width:0; text-align:center;
     font-size:.82rem; color:var(--muted);
@@ -189,13 +190,14 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.3</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.4</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
 
 <main>
   <section id="landing">
+    <button id="resumeBtn" type="button" style="display:none;background:var(--accent);color:var(--accent-ink);border:0;border-radius:12px;padding:12px 18px;font-size:1rem;font-weight:600;margin:0 0 22px;cursor:pointer">↩ Torna alla lettura</button>
     <h1>Il tuo libro,<br>letto <em>ad alta voce</em>.</h1>
     <p class="lead">Apri un PDF o un documento Word e Lettore lo trasforma in un audiolibro in italiano: legge frase per frase seguendo la punteggiatura, e riparte sempre da dove eri rimasto.</p>
     <div id="dropZone" role="button" tabindex="0" aria-label="Apri un file PDF o DOCX">
@@ -898,6 +900,18 @@ playBtn.addEventListener("click",()=>{
   if(playing){setPlaying(false);stopSpeech();}
   else{setPlaying(true);speak(idx);}
 });
+/* il titolo in alto riporta alla schermata iniziale; da lì si torna al libro */
+document.querySelector(".wordmark").addEventListener("click",()=>{
+  if(book&&reader.style.display==="block"){
+    $("resumeBtn").style.display="inline-block";
+    showState("landing");
+    window.scrollTo(0,0);
+  }
+});
+$("resumeBtn").addEventListener("click",()=>{
+  showState("reader");
+  setIndex(idx,{scroll:true,instant:true});
+});
 $("prevBtn").addEventListener("click",()=>{const t=Math.max(0,idx-1);if(playing){stopSpeech();speak(t);}else setIndex(t,{scroll:true});});
 $("nextBtn").addEventListener("click",()=>{const t=Math.min(sents.length-1,idx+1);if(playing){stopSpeech();speak(t);}else setIndex(t,{scroll:true});});
 
@@ -946,6 +960,7 @@ document.addEventListener("keydown",e=>{
 /* ============================== boot ============================== */
 (async function(){
   const b=await cachedBook();
+  if(book)return; // l'utente ha già aperto un file mentre leggevamo la cache
   if(b&&b.pars&&b.pars.length){
     await openBook(b,{announce:true});
   }else{
