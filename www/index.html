@@ -214,7 +214,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.10</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.11</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -868,8 +868,8 @@ function setIndex(i,opts){
   if(sp){
     sp.classList.add("cur");
     spans.forEach((s,j)=>s.classList.toggle("read",j<idx));
-    if((opts&&opts.scroll)||Date.now()-userScrolledAt>5000)
-      sp.scrollIntoView({block:"center",behavior:(opts&&opts.instant)?"auto":"smooth"});
+    if(opts&&opts.scroll)centraFrase(sp); // salto esplicito: subito, con verifica
+    else if(Date.now()-userScrolledAt>5000)sp.scrollIntoView({block:"center",behavior:"smooth"});
   }
   const frac=sents.length>1?idx/(sents.length-1):0;
   barFill.style.width=(frac*100)+"%";
@@ -884,10 +884,32 @@ function setIndex(i,opts){
   if(CAP&&!playing&&setPlaying._srv){try{CAP.LetturaService.salta({a:idx,leggi:false}).catch(()=>{});}catch(e){}}
 }
 
+/* Con content-visibility:auto le altezze dei paragrafi lontani sono solo stimate:
+   un singolo scrollIntoView su un libro lungo si ferma "qualche pagina prima".
+   Qui centriamo subito la frase e poi correggiamo a più riprese, finché il
+   layout vero non si è assestato. */
+function centraFrase(sp){
+  const mio=centraFrase._v=(centraFrase._v||0)+1;
+  let resta=10;
+  const passo=()=>{
+    if(mio!==centraFrase._v||!sp.isConnected)return;
+    const r=sp.getBoundingClientRect();
+    const off=r.top+r.height/2-window.innerHeight/2;
+    if(Math.abs(off)>6){
+      centraFrase._auto=Date.now(); // non è l'utente che scorre
+      window.scrollBy(0,off);
+    }
+    if(--resta>0)setTimeout(passo,150);
+  };
+  passo();
+}
 let scrollTick=false;
 window.addEventListener("scroll",()=>{
   if(scrollTick)return; scrollTick=true;
-  requestAnimationFrame(()=>{userScrolledAt=Date.now();scrollTick=false;});
+  requestAnimationFrame(()=>{
+    if(Date.now()-(centraFrase._auto||0)>300)userScrolledAt=Date.now();
+    scrollTick=false;
+  });
 },{passive:true});
 
 /* ============================== audio di servizio + mediaSession ============================== */
@@ -1163,18 +1185,29 @@ document.addEventListener("keydown",e=>{
 
 /* ============================== boot ============================== */
 (async function(){
+  const l=recenti();
+  if(l.length){ // il caricamento dalla cache può durare secondi: dillo, non mostrare la landing
+    showState("busy");
+    busyMsg.textContent="Riapro «"+l[0].name+"»…";
+  }
+  /* Il segnalibro nativo va letto PRIMA di aprire il libro: mentre il servizio
+     leggeva in background il WebView era congelato, quindi il segnalibro web
+     (localStorage) può essere rimasto pagine indietro. Così la prima
+     impaginazione parte già dal punto giusto, e anche un ▶ immediato legge da lì. */
+  let posNativa=null;
+  if(CAP){try{posNativa=await CAP.LetturaService.getPos().catch(()=>null);}catch(e){}}
   const b=await cachedBook();
   if(book)return; // l'utente ha già aperto un file mentre leggevamo la cache
   if(b&&b.pars&&b.pars.length){
+    if(posNativa&&posNativa.chiave===b.key&&typeof posNativa.i==="number"&&posNativa.i>=0){
+      try{localStorage.setItem("lettore:pos:"+b.key,String(posNativa.i));}catch(e){}
+    }
     await openBook(b,{announce:true});
-    if(CAP&&book){ // il motore nativo è l'autorità sulla posizione (magari ha letto mentre l'app era chiusa)
-      try{CAP.LetturaService.getPos().then(p=>{
-        if(p&&p.chiave===book.key&&typeof p.i==="number"&&p.i>=0&&p.i<sents.length){
-          setIndex(p.i,{scroll:true});
-          playing=!!p.playing; updatePlayBtn();
-        }
-        if(p&&typeof p.timer==="number"&&p.timer>0){sleepAt=Date.now()+p.timer*1000;sleepChip();}
-      }).catch(()=>{});}catch(e){}
+    if(posNativa&&posNativa.chiave===book.key){
+      playing=!!posNativa.playing; updatePlayBtn();
+    }
+    if(posNativa&&typeof posNativa.timer==="number"&&posNativa.timer>0){
+      sleepAt=Date.now()+posNativa.timer*1000; sleepChip();
     }
   }else{
     showState("landing");

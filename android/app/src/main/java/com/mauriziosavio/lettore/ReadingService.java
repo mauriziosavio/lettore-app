@@ -79,6 +79,8 @@ public class ReadingService extends Service {
     private int ultimaPagina = -1;
     private long fineTimer = 0; // timer di spegnimento: istante (elapsedRealtime) in cui fermarsi
     private final Runnable timerRun = this::controllaTimer;
+    private long guardiaScade = 0; // cane da guardia: entro quando deve arrivare onDone/onError
+    private final Runnable guardia = this::controllaGuardia;
 
     /* ============ API statiche usate dal plugin (stesso processo) ============ */
 
@@ -261,8 +263,40 @@ public class ReadingService extends Service {
         try {
             if (!playing || frasi == null || pos < 0 || pos >= frasi.size() || !ttsPronto) return;
             tts.setSpeechRate(rate);
-            tts.speak(frasi.get(pos), TextToSpeech.QUEUE_FLUSH, null, "u" + gen + "-" + pos);
+            String frase = frasi.get(pos);
+            int esito = tts.speak(frase, TextToSpeech.QUEUE_FLUSH, null, "u" + gen + "-" + pos);
+            if (esito != TextToSpeech.SUCCESS) {
+                /* motore occupato o non ancora legato (tipico a freddo): senza questo
+                   retry non arriverebbe MAI un callback e la lettura resterebbe muta */
+                final int g = gen;
+                main.postDelayed(() -> { if (playing && g == gen) parla(); }, 800);
+                return;
+            }
+            armaGuardia(frase.length());
             if (pagineCorrente() != ultimaPagina) refresh();
+        } catch (Throwable ignored) { }
+    }
+
+    /* Cane da guardia: se onDone/onError non arrivano entro il tempo stimato
+       (motore TTS incantato), la frase corrente riparte da sola. */
+    private void armaGuardia(int lunghezza) {
+        try {
+            long stima = 7000 + (long) (lunghezza * 100 / Math.max(0.5f, rate));
+            guardiaScade = SystemClock.elapsedRealtime() + stima;
+            main.removeCallbacks(guardia);
+            main.postDelayed(guardia, stima);
+        } catch (Throwable ignored) { }
+    }
+
+    private void controllaGuardia() {
+        try {
+            if (!playing || guardiaScade == 0) return;
+            long resto = guardiaScade - SystemClock.elapsedRealtime();
+            if (resto > 1000) { main.postDelayed(guardia, resto); return; } // sveglia in anticipo
+            guardiaScade = 0;
+            gen++; // l'eventuale callback in ritardo della frase persa non conta più
+            if (tts != null) tts.stop();
+            parla(); // riprova la stessa frase
         } catch (Throwable ignored) { }
     }
 
@@ -270,6 +304,8 @@ public class ReadingService extends Service {
         try {
             if (!playing || frasi == null) return;
             if (id == null || !id.startsWith("u" + gen + "-")) return; // frase superata
+            guardiaScade = 0;
+            main.removeCallbacks(guardia); // il callback è arrivato: guardia a riposo
             if (errore) {
                 errori++;
                 final int g = gen; // mai arrendersi: il motore TTS può tornare
@@ -301,6 +337,8 @@ public class ReadingService extends Service {
         try {
             gen++;
             playing = false;
+            guardiaScade = 0;
+            main.removeCallbacks(guardia);
             if (tts != null) tts.stop();
             salva();
             refresh();
@@ -515,7 +553,7 @@ public class ReadingService extends Service {
     @Override
     public void onDestroy() {
         instance = null;
-        try { main.removeCallbacks(timerRun); } catch (Throwable ignored) { }
+        try { main.removeCallbacks(timerRun); main.removeCallbacks(guardia); } catch (Throwable ignored) { }
         try { if (tts != null) { tts.stop(); tts.shutdown(); tts = null; } } catch (Throwable ignored) { }
         try {
             if (Build.VERSION.SDK_INT >= 26 && afr != null) {
