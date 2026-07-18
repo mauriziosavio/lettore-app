@@ -214,7 +214,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.11</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.12</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -787,13 +787,27 @@ function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g
 
 function renderBook(){
   sents=[]; spans=[];
+  /* L'estrazione (soprattutto dai PDF) a volte spezza un capoverso a metà frase:
+     il pezzo dopo inizia con la minuscola. Ricucilo, altrimenti la lettura fa
+     una pausa da "fine paragrafo" dove non c'è nessuna punteggiatura. */
+  const pars=[];
+  for(const par of book.pars){
+    const p=pars[pars.length-1];
+    if(p&&!p.head&&!par.head&&/^[a-zà-ú]/.test(par.text)&&/[A-Za-zà-úÀ-Ú0-9,;:‐-]$/.test(p.text)){
+      if(/[‐-]$/.test(p.text))p.text=p.text.slice(0,-1)+par.text; // parola sillabata
+      else p.text+=" "+par.text;
+    }else{
+      pars.push({text:par.text,page:par.page,head:par.head});
+    }
+  }
   const html=[]; let lastPage=null, si=0;
-  book.pars.forEach((par,pi)=>{
+  pars.forEach((par,pi)=>{
     if(par.page!==null&&par.page!==lastPage){
       html.push('<div class="pgbrk" aria-hidden="true">Pagina '+par.page+"</div>");
       lastPage=par.page;
     }
-    const pieces=splitSentences(par.text);
+    /* le righe di soli simboli (es. i separatori «* * *») non si leggono: via */
+    const pieces=splitSentences(par.text).filter(t=>/[A-Za-zÀ-ÿ0-9]/.test(t));
     if(!pieces.length)return;
     const inner=pieces.map(t=>{
       sents.push({t,par:pi,page:par.page,head:!!par.head});
@@ -975,7 +989,7 @@ function setPlaying(on){
       if(on){
         setPlaying._srv=true;
         CAP.LetturaService.play({
-          frasi:sents.map(s=>s.t),
+          frasi:sents.map(s=>testoDaLeggere(s.t)||s.t),
           pagine:sents.map(s=>s.page||0),
           pause:sents.map((s,j)=>pauseAfter(s.t,s,sents[j+1])),
           da:idx, rate:rate,
@@ -1002,11 +1016,25 @@ if("mediaSession" in navigator){
 
 /* ============================== speech ============================== */
 function pauseAfter(t,cur,next){
+  const chiusa=/[.!?…]["»”')\]]*$/.test(t);
   if(cur&&cur.head)return 750;                       // dopo un titolo
-  if(next&&cur&&next.par!==cur.par)return 620;       // fine paragrafo
-  if(/[.!?…]["»”')\]]*$/.test(t))return 420;
+  /* pausa da fine paragrafo SOLO se la frase è davvero conclusa: i PDF spesso
+     spezzano i capoversi a metà frase e la pausa suonava come un punto finto */
+  if(next&&cur&&next.par!==cur.par)return chiusa?620:80;
+  if(chiusa)return 420;
   if(/[;:]["»”')\]]*$/.test(t))return 280;
-  return 180;
+  if(/,["»”')\]]*$/.test(t))return 200;
+  return 80; // frase tagliata dall'estrazione: riprendi quasi subito
+}
+/* Il testo consegnato alla voce: via i simboli che il TTS leggerebbe ad alta
+   voce ("asterisco", virgolette…). Sullo schermo resta il testo originale.
+   Gli apostrofi (l'amico) NON si toccano. */
+function testoDaLeggere(t){
+  return t
+    .replace(/["«»“”„]/g,"")
+    .replace(/[*#_|~^•·◦▪▸►★☆✦❖†‡¶{}[\]\\]+/g," ")
+    .replace(/\.{4,}/g,"…")
+    .replace(/\s{2,}/g," ").trim();
 }
 function stopSpeech(){
   seq++;
@@ -1035,7 +1063,7 @@ function speak(i){
     if(playing){try{CAP.LetturaService.salta({a:i,rate:rate,leggi:true}).catch(()=>{});}catch(e){}}
     return;
   }
-  const u=new SpeechSynthesisUtterance(s.t);
+  const u=new SpeechSynthesisUtterance(testoDaLeggere(s.t)||s.t);
   u.lang="it-IT"; u.rate=rate;
   const v=voices[+voiceSel.value];
   if(v){u.voice=v;u.lang=v.lang;}
