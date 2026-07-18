@@ -7,6 +7,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
@@ -16,19 +17,23 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
 
 import androidx.core.app.NotificationCompat;
 
+import java.util.List;
+import java.util.Locale;
+
 /**
- * Servizio in primo piano attivo mentre Lettore legge: tiene il processo (e il
- * WebView che decide la frase successiva) al riparo da freeze e risparmio
- * batteria, con un wake lock parziale così la CPU resta attiva a schermo spento.
- * Espone una MediaSession per il mini-lettore (notifica/schermata di blocco).
- * OGNI funzione accessoria è difensiva: se qualcosa fallisce si degrada alla
- * notifica semplice, ma il servizio non deve MAI far cadere l'app.
+ * MOTORE DI LETTURA NATIVO. Il WebView consegna l'intero libro al play; da lì
+ * in poi legge questo servizio con il TTS di Android, frase per frase. Così la
+ * lettura continua anche quando il sistema congela il WebView in background
+ * (succedeva dopo ~1 minuto). Il WebView si risincronizza con gli eventi "pos"
+ * e con getPos() quando torna visibile. Tutto è difensivo: mai far cadere l'app.
  */
 public class ReadingService extends Service {
     private static final String CHANNEL_ID = "lettura";
@@ -39,45 +44,94 @@ public class ReadingService extends Service {
     static final String AZ_PREV = "com.mauriziosavio.lettore.PREV";
 
     private static ReadingService instance;
+
+    /* coda consegnata dal plugin (stesso processo: niente limiti degli Intent) */
+    private static List<String> qFrasi;
+    private static int[] qPagine;
+    private static int[] qPause;
+    private static int qDa;
+    private static float qRate = 1f;
+    private static String qTitolo = "Lettore";
+    private static int qNumPages;
+    private static String qChiave = "";
+    private static boolean qNuova = false;
+
+    private final Handler main = new Handler(Looper.getMainLooper());
     private PowerManager.WakeLock wakeLock;
     private MediaSessionCompat session;
     private AudioFocusRequest afr;
-    private boolean playing = true;
-    private String title = "Lettore";
-    private String sub = "Lettura ad alta voce";
-    /* Battito verso il WebView: se la voce si è bloccata, il JS la fa ripartire.
-       Parte dal nativo perché i timer JS in background non sono affidabili. */
-    private final Handler heart = new Handler(Looper.getMainLooper());
-    private final Runnable beat = new Runnable() {
-        @Override public void run() {
-            try {
-                if (playing) {
-                    LetturaServicePlugin.sendAction("tick");
-                    heart.postDelayed(this, 20000);
-                }
-            } catch (Throwable ignored) { }
-        }
-    };
+    private TextToSpeech tts;
+    private boolean ttsPronto = false;
 
-    /** Aggiorna lo stato del mini-lettore; avvia il servizio se non è in piedi. */
-    static void update(Context c, Boolean playing, String title, String sub) {
+    private List<String> frasi;
+    private int[] pagine;
+    private int[] pause;
+    private int pos = 0;
+    private float rate = 1f;
+    private int numPages = 0;
+    private String chiave = "";
+    private String title = "Lettore";
+    private boolean playing = false;
+    private int gen = 0;      // invalida i callback delle frasi superate
+    private int errori = 0;
+    private int ultimaPagina = -1;
+
+    /* ============ API statiche usate dal plugin (stesso processo) ============ */
+
+    static void caricaCoda(Context c, List<String> frasi, int[] pagine, int[] pause,
+                           int da, float rate, String titolo, int numPages, String chiave) {
         try {
+            synchronized (ReadingService.class) {
+                qFrasi = frasi; qPagine = pagine; qPause = pause; qDa = da;
+                qRate = rate; qTitolo = titolo; qNumPages = numPages; qChiave = chiave;
+                qNuova = true;
+            }
             ReadingService s = instance;
             if (s != null) {
-                if (playing != null) s.playing = playing;
-                if (title != null && !title.isEmpty()) s.title = title;
-                if (sub != null && !sub.isEmpty()) s.sub = sub;
-                s.refresh();
+                s.main.post(s::sincronizza);
             } else {
                 Intent i = new Intent(c, ReadingService.class);
-                if (playing != null) i.putExtra("playing", playing.booleanValue());
-                if (title != null) i.putExtra("title", title);
-                if (sub != null) i.putExtra("sub", sub);
                 if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(i);
                 else c.startService(i);
             }
         } catch (Throwable ignored) { }
     }
+
+    static void pausaStatica() {
+        ReadingService s = instance;
+        if (s != null) s.main.post(s::pausa);
+    }
+
+    static void saltaStatica(Context c, int a, float nuovoRate, boolean leggi) {
+        ReadingService s = instance;
+        if (s != null) {
+            s.main.post(() -> s.salta(a, nuovoRate, leggi));
+        } else if (a >= 0) {
+            try { // servizio spento: aggiorna solo il segnalibro persistente
+                SharedPreferences p = c.getSharedPreferences("lettura", MODE_PRIVATE);
+                p.edit().putInt("pos", a).putBoolean("playing", false).apply();
+            } catch (Throwable ignored) { }
+        }
+    }
+
+    /** {i, playing, chiave} — dal servizio vivo o, se spento, dal segnalibro salvato. */
+    static int[] posizione(Context c, String[] chiaveOut) {
+        ReadingService s = instance;
+        if (s != null) {
+            chiaveOut[0] = s.chiave;
+            return new int[]{ s.pos, s.playing ? 1 : 0 };
+        }
+        try {
+            SharedPreferences p = c.getSharedPreferences("lettura", MODE_PRIVATE);
+            chiaveOut[0] = p.getString("chiave", "");
+            return new int[]{ p.getInt("pos", -1), 0 };
+        } catch (Throwable ignored) {
+            chiaveOut[0] = "";
+            return new int[]{ -1, 0 };
+        }
+    }
+
+    /* ============ ciclo di vita ============ */
 
     @Override
     public void onCreate() {
@@ -93,46 +147,180 @@ public class ReadingService extends Service {
             }
         } catch (Throwable ignored) { }
         try {
-            // I controlli media di sistema parlano con questa sessione: ogni comando
-            // viene girato al WebView tramite il plugin.
             session = new MediaSessionCompat(this, "lettore");
             session.setCallback(new MediaSessionCompat.Callback() {
-                @Override public void onPlay() { LetturaServicePlugin.sendAction("play"); }
-                @Override public void onPause() { LetturaServicePlugin.sendAction("pause"); }
-                @Override public void onStop() { LetturaServicePlugin.sendAction("pause"); }
-                @Override public void onSkipToNext() { LetturaServicePlugin.sendAction("next"); }
-                @Override public void onSkipToPrevious() { LetturaServicePlugin.sendAction("prev"); }
+                @Override public void onPlay() { main.post(() -> salta(-1, 0, true)); }
+                @Override public void onPause() { main.post(ReadingService.this::pausa); }
+                @Override public void onStop() { main.post(ReadingService.this::pausa); }
+                @Override public void onSkipToNext() { main.post(() -> spostati(1)); }
+                @Override public void onSkipToPrevious() { main.post(() -> spostati(-1)); }
             });
             session.setActive(true);
         } catch (Throwable t) {
-            session = null; // senza sessione: niente mini-lettore, ma l'app vive
+            session = null; // senza sessione niente mini-lettore, ma l'app vive
         }
         try {
             PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
             wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "lettore:lettura");
             wakeLock.setReferenceCounted(false);
         } catch (Throwable ignored) { }
+        initTts();
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         try {
             String az = intent != null ? intent.getAction() : null;
-            if (AZ_PLAY.equals(az)) { LetturaServicePlugin.sendAction("play"); return START_NOT_STICKY; }
-            if (AZ_PAUSE.equals(az)) { LetturaServicePlugin.sendAction("pause"); return START_NOT_STICKY; }
-            if (AZ_NEXT.equals(az)) { LetturaServicePlugin.sendAction("next"); return START_NOT_STICKY; }
-            if (AZ_PREV.equals(az)) { LetturaServicePlugin.sendAction("prev"); return START_NOT_STICKY; }
-            if (intent != null) {
-                playing = intent.getBooleanExtra("playing", playing);
-                String t = intent.getStringExtra("title");
-                if (t != null && !t.isEmpty()) title = t;
-                String s = intent.getStringExtra("sub");
-                if (s != null && !s.isEmpty()) sub = s;
+            if (AZ_PLAY.equals(az)) { salta(-1, 0, true); return START_NOT_STICKY; }
+            if (AZ_PAUSE.equals(az)) { pausa(); return START_NOT_STICKY; }
+            if (AZ_NEXT.equals(az)) { spostati(1); return START_NOT_STICKY; }
+            if (AZ_PREV.equals(az)) { spostati(-1); return START_NOT_STICKY; }
+        } catch (Throwable ignored) { }
+        sincronizza();
+        return START_NOT_STICKY;
+    }
+
+    /* ============ motore ============ */
+
+    private void initTts() {
+        if (tts != null) return;
+        try {
+            tts = new TextToSpeech(this, status -> main.post(() -> {
+                ttsPronto = status == TextToSpeech.SUCCESS;
+                if (!ttsPronto) return;
+                try { tts.setLanguage(Locale.ITALIAN); } catch (Throwable ignored) { }
+                try {
+                    tts.setAudioAttributes(new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build());
+                } catch (Throwable ignored) { }
+                tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                    @Override public void onStart(String id) { }
+                    @Override public void onDone(String id) { main.post(() -> fineFrase(id, false)); }
+                    @Override public void onError(String id) { main.post(() -> fineFrase(id, true)); }
+                    @Override public void onError(String id, int code) { main.post(() -> fineFrase(id, true)); }
+                });
+                if (playing) parla();
+            }));
+        } catch (Throwable ignored) { }
+    }
+
+    private void sincronizza() {
+        try {
+            boolean nuova;
+            synchronized (ReadingService.class) {
+                nuova = qNuova;
+                if (nuova) {
+                    frasi = qFrasi; pagine = qPagine; pause = qPause; pos = Math.max(0, qDa);
+                    rate = qRate; title = qTitolo; numPages = qNumPages; chiave = qChiave;
+                    qNuova = false;
+                }
+            }
+            if (nuova) {
+                gen++;
+                errori = 0;
+                playing = true;
+                salva();
+                if (ttsPronto) parla();
+                else initTts();
             }
         } catch (Throwable ignored) { }
         refresh();
-        return START_NOT_STICKY;
     }
+
+    private void parla() {
+        try {
+            if (!playing || frasi == null || pos < 0 || pos >= frasi.size() || !ttsPronto) return;
+            tts.setSpeechRate(rate);
+            tts.speak(frasi.get(pos), TextToSpeech.QUEUE_FLUSH, null, "u" + gen + "-" + pos);
+            if (pagineCorrente() != ultimaPagina) refresh();
+        } catch (Throwable ignored) { }
+    }
+
+    private void fineFrase(String id, boolean errore) {
+        try {
+            if (!playing || frasi == null) return;
+            if (id == null || !id.startsWith("u" + gen + "-")) return; // frase superata
+            if (errore) {
+                errori++;
+                final int g = gen; // mai arrendersi: il motore TTS può tornare
+                main.postDelayed(() -> { if (playing && g == gen) parla(); }, errori < 3 ? 700 : 5000);
+                return;
+            }
+            errori = 0;
+            if (pos + 1 >= frasi.size()) {
+                playing = false;
+                salva();
+                refresh();
+                LetturaServicePlugin.emit("fine", -1, false);
+                return;
+            }
+            int attesa = (pause != null && pos < pause.length) ? Math.max(0, pause[pos]) : 200;
+            final int g = gen;
+            main.postDelayed(() -> {
+                if (playing && g == gen) {
+                    pos++;
+                    salva();
+                    LetturaServicePlugin.emit("pos", pos, playing);
+                    parla();
+                }
+            }, attesa);
+        } catch (Throwable ignored) { }
+    }
+
+    private void pausa() {
+        try {
+            gen++;
+            playing = false;
+            if (tts != null) tts.stop();
+            salva();
+            refresh();
+            LetturaServicePlugin.emit("stato", pos, false);
+        } catch (Throwable ignored) { }
+    }
+
+    /** a<0 = resta dov'è; rate<=0 = invariato; leggi = avvia/continua la voce. */
+    private void salta(int a, float nuovoRate, boolean leggi) {
+        try {
+            gen++;
+            if (a >= 0) pos = a;
+            if (nuovoRate > 0) rate = nuovoRate;
+            if (frasi != null && pos >= frasi.size()) pos = frasi.size() - 1;
+            if (leggi || playing) {
+                playing = true;
+                if (tts != null) tts.stop();
+                parla();
+                LetturaServicePlugin.emit("stato", pos, true);
+            }
+            salva();
+            refresh();
+        } catch (Throwable ignored) { }
+    }
+
+    private void spostati(int delta) {
+        try {
+            if (frasi == null) return;
+            int a = Math.max(0, Math.min(frasi.size() - 1, pos + delta));
+            salta(a, 0, playing);
+            LetturaServicePlugin.emit("pos", pos, playing);
+        } catch (Throwable ignored) { }
+    }
+
+    private void salva() {
+        try {
+            getSharedPreferences("lettura", MODE_PRIVATE).edit()
+                .putInt("pos", pos)
+                .putString("chiave", chiave)
+                .putBoolean("playing", playing)
+                .apply();
+        } catch (Throwable ignored) { }
+    }
+
+    private int pagineCorrente() {
+        return (pagine != null && pos >= 0 && pos < pagine.length) ? pagine[pos] : 0;
+    }
+
+    /* ============ notifica / mini-lettore ============ */
 
     private PendingIntent azione(String az, int rc) {
         Intent i = new Intent(this, ReadingService.class).setAction(az);
@@ -140,6 +328,11 @@ public class ReadingService extends Service {
     }
 
     private void refresh() {
+        String sub;
+        int pg = pagineCorrente();
+        ultimaPagina = pg;
+        if (pg > 0) sub = "Pagina " + pg + (numPages > 0 ? " di " + numPages : "");
+        else sub = playing ? "Lettura in corso" : "In pausa";
         try {
             if (session != null) {
                 session.setMetadata(new MediaMetadataCompat.Builder()
@@ -185,12 +378,12 @@ public class ReadingService extends Service {
             n = null;
         }
         if (n == null) {
-            try { // ripiego: notifica semplice come nella 18.07.4, che funzionava
+            try { // ripiego: notifica minima
                 Notification.Builder b = Build.VERSION.SDK_INT >= 26
                     ? new Notification.Builder(this, CHANNEL_ID)
                     : new Notification.Builder(this);
                 n = b.setContentTitle("Lettore")
-                    .setContentText("Lettura ad alta voce in corso")
+                    .setContentText("Lettura ad alta voce")
                     .setSmallIcon(R.mipmap.ic_launcher)
                     .setOngoing(true)
                     .build();
@@ -207,11 +400,11 @@ public class ReadingService extends Service {
         } catch (Throwable ignored) { }
         try { // CPU sveglia solo mentre legge davvero
             if (wakeLock != null) {
-                if (playing) wakeLock.acquire(6 * 60 * 60 * 1000L); // limite di sicurezza: 6 ore
+                if (playing) wakeLock.acquire(6 * 60 * 60 * 1000L);
                 else if (wakeLock.isHeld()) wakeLock.release();
             }
         } catch (Throwable ignored) { }
-        try { // focus audio: dichiara ad Android una riproduzione vera
+        try { // focus audio: mette in pausa l'eventuale musica mentre il Lettore legge
             AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
             if (Build.VERSION.SDK_INT >= 26 && am != null) {
                 if (playing) {
@@ -228,15 +421,12 @@ public class ReadingService extends Service {
                 }
             }
         } catch (Throwable ignored) { }
-        try {
-            heart.removeCallbacks(beat);
-            if (playing) heart.postDelayed(beat, 20000);
-        } catch (Throwable ignored) { }
     }
 
     @Override
     public void onTaskRemoved(Intent rootIntent) {
-        // app chiusa dalle recenti: il WebView non c'è più, inutile restare in piedi
+        // app chiusa dalle recenti: fermati e salva il segnalibro
+        try { pausa(); } catch (Throwable ignored) { }
         stopSelf();
         super.onTaskRemoved(rootIntent);
     }
@@ -244,7 +434,7 @@ public class ReadingService extends Service {
     @Override
     public void onDestroy() {
         instance = null;
-        try { heart.removeCallbacks(beat); } catch (Throwable ignored) { }
+        try { if (tts != null) { tts.stop(); tts.shutdown(); tts = null; } } catch (Throwable ignored) { }
         try {
             if (Build.VERSION.SDK_INT >= 26 && afr != null) {
                 ((AudioManager) getSystemService(AUDIO_SERVICE)).abandonAudioFocusRequest(afr);

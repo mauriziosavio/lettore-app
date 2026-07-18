@@ -191,7 +191,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.8</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.9</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -405,19 +405,17 @@ if(CAP){ /* nell'APK la voce è quella di sistema Android: niente elenco voci we
       }
     }).catch(()=>{});
   }catch(e){}
-  /* comandi dal mini-lettore Android (notifica / schermata di blocco) + battito anti-blocco */
+  /* Nell'APK legge il SERVIZIO NATIVO (immune ai congelamenti del WebView):
+     qui riceviamo solo gli aggiornamenti per tenere allineata l'interfaccia. */
   try{
     CAP.LetturaService.addListener("mediaAction",d=>{
-      const a=d&&d.azione;
-      if(a==="pause"){if(playing){setPlaying(false);stopSpeech();}}
-      else if(a==="play"){if(!playing&&book&&sents.length){setPlaying(true);speak(idx);}}
-      else if(a==="next")$("nextBtn").click();
-      else if(a==="prev")$("prevBtn").click();
-      else if(a==="tick"){
-        /* battito dal servizio nativo: se la voce è ferma da troppo, falla ripartire */
-        if(playing&&speak._watch&&Date.now()-speak._watch.t>speak._watch.est){
-          speak._watch=null; stopSpeech(); speak(idx);
-        }
+      if(!d)return;
+      if(d.azione==="pos"&&typeof d.i==="number"){
+        if(book&&d.i>=0&&d.i<sents.length)setIndex(d.i);
+      }else if(d.azione==="stato"){
+        playing=!!d.playing; updatePlayBtn();
+      }else if(d.azione==="fine"){
+        playing=false; updatePlayBtn(); toast("Fine del libro. Bella lettura!");
       }
     });
   }catch(e){}
@@ -730,10 +728,9 @@ function setIndex(i,opts){
   const s=sents[idx];
   pageLbl.textContent=s&&s.page?("Pag. "+s.page+(book.numPages?" di "+book.numPages:"")):("Frase "+(idx+1)+" di "+sents.length);
   try{localStorage.setItem("lettore:pos:"+book.key,String(idx));}catch(e){}
-  if(CAP&&playing&&s&&s.page&&setIndex._np!==s.page){ /* aggiorna la pagina nel mini-lettore */
-    setIndex._np=s.page;
-    try{CAP.LetturaService.setState({sub:"Pagina "+s.page+(book.numPages?" di "+book.numPages:"")}).catch(()=>{});}catch(e){}
-  }
+  /* da fermo, comunica al motore nativo lo spostamento manuale del segnalibro
+     (mentre legge ci pensa speak→salta; gli echi degli eventi "pos" sono innocui) */
+  if(CAP&&!playing&&setPlaying._srv){try{CAP.LetturaService.salta({a:idx,leggi:false}).catch(()=>{});}catch(e){}}
 }
 
 let scrollTick=false;
@@ -799,12 +796,21 @@ function pageSub(){
 }
 function setPlaying(on){
   playing=on; updatePlayBtn();
-  if(CAP){ /* nell'APK ci pensa il servizio in primo piano; lo schermo può spegnersi.
-              In pausa il servizio resta: dal mini-lettore si può riprendere. */
+  if(CAP){ /* nell'APK legge il servizio nativo: al play gli consegniamo tutto il
+              libro, così continua anche se Android congela il WebView. */
     try{
-      const o={playing:on,title:book?book.name:"Lettore",sub:pageSub()};
-      if(on){setPlaying._srv=true;CAP.LetturaService.start(o).catch(()=>{});}
-      else if(setPlaying._srv){CAP.LetturaService.setState(o).catch(()=>{});} /* mai prima del primo play */
+      if(on){
+        setPlaying._srv=true;
+        CAP.LetturaService.play({
+          frasi:sents.map(s=>s.t),
+          pagine:sents.map(s=>s.page||0),
+          pause:sents.map((s,j)=>pauseAfter(s.t,s,sents[j+1])),
+          da:idx, rate:rate,
+          titolo:book?book.name:"Lettore",
+          numPages:book&&book.numPages?book.numPages:0,
+          chiave:book?book.key:""
+        }).catch(()=>{});
+      }else if(setPlaying._srv){CAP.LetturaService.pause().catch(()=>{});} /* mai prima del primo play */
     }catch(e){}
   }else if(on){requestWake(); holdTtsLock(); silent.play().catch(()=>{}); startAc();}
   else{releaseWake(); dropTtsLock(); silent.pause(); stopAc();}
@@ -830,7 +836,7 @@ function pauseAfter(t,cur,next){
 function stopSpeech(){
   seq++;
   clearTimeout(watchdog);
-  if(CAP){try{CAP.TextToSpeech.stop();}catch(e){}}
+  if(CAP)return; // il motore nativo si ferma via pause()/salta(), non da qui
   speechSynthesis.cancel();
 }
 function speak(i){
@@ -848,33 +854,9 @@ function speak(i){
     setTimeout(()=>{if(my===seq&&playing)speak(i+1);},pauseAfter(s.t,s,sents[i+1]));
   };
   if(CAP){
-    /* Voce nativa Android: con il servizio in primo piano attivo continua
-       anche a schermo spento o con un'altra app davanti. */
-    const estN=(s.t.length/10)*(1000/rate)+9000;
-    watchdog=setTimeout(()=>{
-      if(my===seq&&playing){
-        try{CAP.TextToSpeech.stop();}catch(e){}
-        seq++;const nv=seq;
-        setTimeout(()=>{if(playing&&nv===seq)speak(i+1);},150);
-      }
-    },estN);
-    speak._watch={t:Date.now(),est:estN+8000}; // per il battito anti-blocco nativo
-    CAP.TextToSpeech.speak({text:s.t,lang:"it-IT",rate:rate,queueStrategy:0})
-      .then(()=>{if(my!==seq)return;errStreak=0;killStreak=0;advance();})
-      .catch(()=>{
-        if(my!==seq)return; // interrotta da un nostro stop: ignora
-        clearTimeout(watchdog);
-        if(document.hidden){ // in sottofondo mai arrendersi: ritenta piano finché il motore torna
-          setTimeout(()=>{if(my===seq&&playing)speak(i);},3000);
-          return;
-        }
-        if(++errStreak>=3){
-          errStreak=0; setPlaying(false); stopSpeech(); setIndex(i);
-          toast("La voce non riesce a partire. Tocca di nuovo ▶; se non senti nulla, controlla il volume.",6000);
-          return;
-        }
-        setTimeout(()=>{if(my===seq&&playing)speak(i);},500);
-      });
+    /* Nell'APK il ciclo di lettura vive nel servizio nativo: qui basta
+       spostare la posizione (e, se sta leggendo, dirgli di saltare lì). */
+    if(playing){try{CAP.LetturaService.salta({a:i,rate:rate,leggi:true}).catch(()=>{});}catch(e){}}
     return;
   }
   const u=new SpeechSynthesisUtterance(s.t);
@@ -934,7 +916,17 @@ function releaseWake(){
   try{if(wakeLock){wakeLock.release();wakeLock=null;}}catch(e){}
 }
 document.addEventListener("visibilitychange",()=>{
-  if(CAP)return; // nell'APK la voce nativa non muore in background
+  if(CAP){ // nell'APK legge il nativo: al ritorno riallinea posizione e stato
+    if(document.visibilityState==="visible"&&book){
+      try{CAP.LetturaService.getPos().then(p=>{
+        if(p&&p.chiave===book.key&&typeof p.i==="number"&&p.i>=0&&p.i<sents.length){
+          setIndex(p.i,{scroll:true});
+          playing=!!p.playing; updatePlayBtn();
+        }
+      }).catch(()=>{});}catch(e){}
+    }
+    return;
+  }
   if(document.visibilityState==="visible"&&playing){
     requestWake();
     try{speechSynthesis.resume();}catch(e){}
@@ -1018,6 +1010,14 @@ document.addEventListener("keydown",e=>{
   if(book)return; // l'utente ha già aperto un file mentre leggevamo la cache
   if(b&&b.pars&&b.pars.length){
     await openBook(b,{announce:true});
+    if(CAP&&book){ // il motore nativo è l'autorità sulla posizione (magari ha letto mentre l'app era chiusa)
+      try{CAP.LetturaService.getPos().then(p=>{
+        if(p&&p.chiave===book.key&&typeof p.i==="number"&&p.i>=0&&p.i<sents.length){
+          setIndex(p.i,{scroll:true});
+          playing=!!p.playing; updatePlayBtn();
+        }
+      }).catch(()=>{});}catch(e){}
+    }
   }else{
     showState("landing");
   }
