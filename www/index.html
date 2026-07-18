@@ -191,7 +191,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.6</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.7</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -391,6 +391,18 @@ if(CAP){ /* nell'APK la voce è quella di sistema Android: niente elenco voci we
       const r=document.documentElement.style;
       r.setProperty("--sat",(i.top||0)+"px");
       r.setProperty("--sab",(i.bottom||0)+"px");
+    }).catch(()=>{});
+  }catch(e){}
+  /* se l'app si era chiusa per un errore, mostra i dettagli nella pagina iniziale */
+  try{
+    CAP.LetturaService.crash().then(r=>{
+      if(r&&r.trace){
+        const p=document.createElement("pre");
+        p.style.cssText="margin:20px 0 0;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:.6rem;line-height:1.45;white-space:pre-wrap;word-break:break-all;color:var(--muted);max-height:45vh;overflow:auto";
+        p.textContent="Dettagli dell'ultima chiusura anomala (fai uno screenshot e mandalo a Claude):\n\n"+r.trace;
+        landing.appendChild(p);
+        toast("L'app si era chiusa per un errore. Tocca «Lettore.» in alto: in fondo alla pagina iniziale ci sono i dettagli da mandarmi.",9000);
+      }
     }).catch(()=>{});
   }catch(e){}
   /* comandi dal mini-lettore Android (notifica / schermata di blocco) + battito anti-blocco */

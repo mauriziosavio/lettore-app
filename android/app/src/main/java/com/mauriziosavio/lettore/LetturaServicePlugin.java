@@ -69,6 +69,26 @@ public class LetturaServicePlugin extends Plugin {
         call.resolve();
     }
 
+    /** Restituisce (e cancella) l'eventuale traccia dell'ultimo crash. */
+    @PluginMethod
+    public void crash(PluginCall call) {
+        JSObject o = new JSObject();
+        String trace = "";
+        try {
+            java.io.File f = new java.io.File(getContext().getFilesDir(), "crash.txt");
+            if (f.exists()) {
+                byte[] b = new byte[(int) Math.min(f.length(), 6000)];
+                try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
+                    int n = in.read(b);
+                    if (n > 0) trace = new String(b, 0, n, java.nio.charset.StandardCharsets.UTF_8);
+                }
+                f.delete();
+            }
+        } catch (Throwable ignored) { }
+        o.put("trace", trace);
+        call.resolve(o);
+    }
+
     /** Rientri di sistema in px CSS (dp): {top, bottom} per non finire sotto la barra di stato. */
     @PluginMethod
     public void insets(PluginCall call) {
