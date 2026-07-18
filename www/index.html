@@ -98,6 +98,29 @@
   .facts li::before{content:""; flex:none; width:7px; height:7px; border-radius:2px; background:var(--accent); transform:translateY(-1px)}
   .facts b{color:var(--ink); font-weight:600}
 
+  /* ---------- letti di recente ---------- */
+  #recenti{margin:28px 0 0; display:none}
+  #recenti h2{
+    font-size:.74rem; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--muted); margin:0 0 10px; font-weight:600;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  }
+  .rec{
+    display:flex; align-items:center; gap:10px;
+    border:1px solid var(--line); background:var(--paper-2); border-radius:12px;
+    padding:11px 8px 11px 14px; margin:0 0 8px; cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+  }
+  .rec:active{transform:scale(.99)}
+  .rec .rbody{flex:1; min-width:0}
+  .rec .rtit{font-weight:600; font-size:.95rem; line-height:1.35; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .rec .rsub{font-size:.78rem; color:var(--muted); margin-top:2px; font-variant-numeric:tabular-nums}
+  .rec .rdel{
+    flex:none; border:none; background:none; color:var(--muted); cursor:pointer;
+    font-size:1rem; line-height:1; padding:10px; border-radius:50%;
+  }
+  .rec .rdel:focus-visible,.rec:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+
   /* ---------- busy ---------- */
   #busy{display:none; padding-top:10vh; text-align:center}
   #busy .spin{
@@ -191,7 +214,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.9</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.10</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -209,6 +232,10 @@
       </svg>
       <p class="big">Tocca per scegliere un file</p>
       <p class="fmt">PDF · DOCX · TXT — anche libri di centinaia di pagine</p>
+    </div>
+    <div id="recenti">
+      <h2>Letti di recente</h2>
+      <div id="recList"></div>
     </div>
     <ul class="facts">
       <li><b>Segnalibro automatico.</b>&nbsp;Chiudi quando vuoi: alla riapertura riprende dalla frase esatta.</li>
@@ -252,6 +279,7 @@
         <button class="chip" data-rate="1.5" type="button">1,5×</button>
       </div>
       <select id="voiceSel" aria-label="Voce"></select>
+      <button class="chip" id="sleepBtn" type="button" aria-label="Timer di spegnimento">🌙 Timer</button>
     </div>
   </div>
 </footer>
@@ -381,8 +409,27 @@ function refreshVoices(){
 }
 speechSynthesis.onvoiceschanged=refreshVoices;
 refreshVoices();
-if(CAP){ /* nell'APK la voce è quella di sistema Android: niente elenco voci web */
-  voiceSel.style.display="none";
+if(CAP){ /* nell'APK le voci sono quelle del TTS di Android: le chiediamo al plugin */
+  voiceSel.style.display="none"; /* nascosto finché non sappiamo se ci sono voci */
+  try{
+    CAP.LetturaService.voci().then(r=>{
+      const vs=(r&&r.voci)||[];
+      if(!vs.length)return; /* motore TTS senza voci italiane: resta la predefinita */
+      voiceSel.innerHTML="";
+      vs.forEach(v=>{
+        const o=document.createElement("option");
+        o.value=v.nome; o.textContent=v.etichetta;
+        voiceSel.appendChild(o);
+      });
+      if(voiceName&&vs.some(v=>v.nome===voiceName)){
+        voiceSel.value=voiceName;
+        CAP.LetturaService.setVoce({nome:voiceName,anteprima:false}).catch(()=>{});
+      }else{
+        const p=vs.find(v=>v.predefinita); if(p)voiceSel.value=p.nome;
+      }
+      voiceSel.style.display="";
+    }).catch(()=>{});
+  }catch(e){}
   const ve=document.querySelector(".wordmark .ver"); if(ve)ve.textContent+="·app";
   const ah=$("apkHint"); if(ah)ah.style.display="none"; /* siamo già nell'app */
   /* rientri di sistema (barra di stato / navigazione): l'header non deve finire sotto le icone */
@@ -414,6 +461,8 @@ if(CAP){ /* nell'APK la voce è quella di sistema Android: niente elenco voci we
         if(book&&d.i>=0&&d.i<sents.length)setIndex(d.i);
       }else if(d.azione==="stato"){
         playing=!!d.playing; updatePlayBtn();
+        /* se la pausa arriva allo scadere del timer, spegni anche il chip 🌙 */
+        if(!playing&&sleepAt&&Date.now()>=sleepAt-2000){sleepAt=0;sleepChip();toast("⏰ Timer: lettura in pausa. Buonanotte!");}
       }else if(d.azione==="fine"){
         playing=false; updatePlayBtn(); toast("Fine del libro. Bella lettura!");
       }
@@ -426,6 +475,11 @@ if(CAP){ /* nell'APK la voce è quella di sistema Android: niente elenco voci we
   setTimeout(()=>{refreshVoices();pollVoices(n-1);},400);
 })(10);
 voiceSel.addEventListener("change",()=>{
+  if(CAP){ /* voce del TTS Android: la applica il servizio; da fermo fa sentire un'anteprima */
+    voiceName=voiceSel.value; saveSettings();
+    try{CAP.LetturaService.setVoce({nome:voiceName,anteprima:!playing}).catch(()=>{});}catch(e){}
+    return;
+  }
   const v=voices[+voiceSel.value];
   if(v){voiceName=v.name; saveSettings(); if(playing){stopSpeech(); speak(idx);}}
 });
@@ -439,6 +493,34 @@ document.querySelectorAll("#rateChips .chip").forEach(ch=>{
     if(playing){stopSpeech(); speak(idx);}
   });
 });
+
+/* ============================== timer di spegnimento ============================== */
+/* Un tocco sul chip 🌙 passa da spento → 15 → 30 → 60 minuti → spento.
+   Nell'APK il conto alla rovescia vive nel SERVIZIO NATIVO (il JS in background
+   è congelato); sul web viene controllato a ogni fine frase. */
+const sleepBtn=$("sleepBtn"), SLEEP_MIN=[15,30,60];
+let sleepAt=0; // istante (ms) in cui fermarsi; 0 = timer spento
+function sleepChip(){
+  if(sleepAt&&sleepAt>Date.now()){
+    const m=Math.max(1,Math.ceil((sleepAt-Date.now())/60000));
+    sleepBtn.textContent="🌙 "+m+" min"; sleepBtn.classList.add("on");
+  }else{
+    sleepAt=0; sleepBtn.textContent="🌙 Timer"; sleepBtn.classList.remove("on");
+  }
+}
+function setSleep(min,quiet){
+  sleepAt=min>0?Date.now()+min*60000:0;
+  if(CAP){try{CAP.LetturaService.timer({minuti:min}).catch(()=>{});}catch(e){}}
+  sleepChip();
+  if(!quiet)toast(min>0?"🌙 La lettura si fermerà da sola tra "+min+" minuti.":"Timer di spegnimento annullato.");
+}
+sleepBtn.addEventListener("click",()=>{
+  const left=sleepAt?Math.ceil((sleepAt-Date.now())/60000):0;
+  const next=SLEEP_MIN.find(m=>m>left);
+  setSleep(next||0);
+});
+setInterval(()=>{if(sleepAt)sleepChip();},20000); // tiene aggiornato il conto sul chip
+function sleepScaduto(){return sleepAt&&Date.now()>=sleepAt;}
 
 /* ============================== sentence splitting ============================== */
 const ABBR=new Set(["sig.","sigg.","dott.","prof.","ing.","avv.","geom.","rag.","arch.","mons.","on.","sen.","ecc.","etc.","pag.","pagg.","cap.","capp.","art.","artt.","n.","nn.","vol.","voll.","fig.","figg.","tab.","es.","cfr.","ca.","sec.","st.","gen.","feb.","mar.","apr.","mag.","giu.","lug.","ago.","set.","ott.","nov.","dic."]);
@@ -599,7 +681,11 @@ function extractTxt(text){
   return {pars,numPages:null};
 }
 
-/* ============================== indexeddb cache ============================== */
+/* ============================== indexeddb cache (cronologia di più libri) ============================== */
+/* IndexedDB conserva il testo completo di ogni libro (chiave = book.key);
+   localStorage "lettore:recenti" tiene il piccolo indice per la schermata iniziale.
+   Il segnalibro resta in "lettore:pos:<key>", già per-libro da sempre. */
+const MAX_RECENTI=10;
 function idb(){
   return new Promise((res,rej)=>{
     const r=indexedDB.open("lettore",1);
@@ -608,22 +694,86 @@ function idb(){
     r.onerror=()=>rej(r.error);
   });
 }
-async function cacheBook(b){
-  try{
-    const db=await idb();
-    const tx=db.transaction("books","readwrite");
-    tx.objectStore("books").clear();
-    tx.objectStore("books").put(b,"last");
-  }catch(e){}
+function idbReq(mode,fn){
+  return idb().then(db=>new Promise((res,rej)=>{
+    const q=fn(db.transaction("books",mode).objectStore("books"));
+    q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error);
+  }));
 }
-async function cachedBook(){
+function recenti(){
+  try{const l=JSON.parse(localStorage.getItem("lettore:recenti")||"[]");return Array.isArray(l)?l:[];}catch(e){return[];}
+}
+function saveRecenti(l){try{localStorage.setItem("lettore:recenti",JSON.stringify(l));}catch(e){}}
+/* porta (o aggiorna) il libro in cima all'elenco dei recenti e pota i più vecchi */
+function touchRecenti(b,frasi){
+  const l=recenti().filter(r=>r.key!==b.key);
+  l.unshift({key:b.key,name:b.name,numPages:b.numPages||0,frasi:frasi||0,quando:Date.now()});
+  l.splice(MAX_RECENTI).forEach(d=>{
+    idbReq("readwrite",st=>st.delete(d.key)).catch(()=>{});
+    try{localStorage.removeItem("lettore:pos:"+d.key);}catch(e){}
+  });
+  saveRecenti(l); renderRecenti();
+}
+async function cacheBook(b){
+  try{await idbReq("readwrite",st=>st.put(b,b.key));}catch(e){}
+}
+async function cachedBook(){ /* il libro più recente; migra la vecchia cache a libro singolo */
   try{
-    const db=await idb();
-    return await new Promise((res,rej)=>{
-      const q=db.transaction("books").objectStore("books").get("last");
-      q.onsuccess=()=>res(q.result||null); q.onerror=()=>rej(q.error);
-    });
+    const last=await idbReq("readonly",st=>st.get("last")).catch(()=>null);
+    if(last&&last.key){
+      await idbReq("readwrite",st=>st.put(last,last.key));
+      await idbReq("readwrite",st=>st.delete("last")).catch(()=>{});
+      if(!recenti().some(r=>r.key===last.key)){
+        const l=recenti();
+        l.unshift({key:last.key,name:last.name,numPages:last.numPages||0,frasi:0,quando:Date.now()});
+        saveRecenti(l);
+      }
+    }
+    const l=recenti();
+    if(!l.length)return null;
+    return await idbReq("readonly",st=>st.get(l[0].key))||null;
   }catch(e){return null;}
+}
+async function apriRecente(key){
+  let b=null;
+  try{b=await idbReq("readonly",st=>st.get(key));}catch(e){}
+  if(!b||!b.pars||!b.pars.length){
+    saveRecenti(recenti().filter(r=>r.key!==key)); renderRecenti();
+    toast("Non riesco a riaprire questo libro: apri di nuovo il file originale.",5000);
+    return;
+  }
+  stopSpeech(); setPlaying(false);
+  await openBook(b,{announce:true});
+}
+function renderRecenti(){
+  const box=$("recenti"), list=$("recList"), l=recenti();
+  if(!l.length){box.style.display="none";return;}
+  box.style.display="block";
+  list.innerHTML="";
+  l.forEach(r=>{
+    let pos=0; try{pos=+localStorage.getItem("lettore:pos:"+r.key)||0;}catch(e){}
+    const pct=r.frasi>1?Math.min(100,Math.round(pos/(r.frasi-1)*100)):0;
+    const parti=[];
+    if(r.frasi)parti.push(pct+"% letto");
+    if(r.numPages)parti.push(r.numPages+" pagine");
+    if(r.quando)parti.push(new Date(r.quando).toLocaleDateString("it-IT",{day:"numeric",month:"short"}));
+    const d=document.createElement("div");
+    d.className="rec"; d.setAttribute("role","button"); d.tabIndex=0;
+    d.innerHTML='<div class="rbody"><div class="rtit"></div><div class="rsub"></div></div>'+
+                '<button class="rdel" type="button" aria-label="Togli dall\'elenco">✕</button>';
+    d.querySelector(".rtit").textContent=r.name;
+    d.querySelector(".rsub").textContent=parti.join(" · ");
+    d.addEventListener("click",e=>{if(!e.target.closest(".rdel"))apriRecente(r.key);});
+    d.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();apriRecente(r.key);}});
+    d.querySelector(".rdel").addEventListener("click",()=>{
+      saveRecenti(recenti().filter(x=>x.key!==r.key));
+      idbReq("readwrite",st=>st.delete(r.key)).catch(()=>{});
+      try{localStorage.removeItem("lettore:pos:"+r.key);}catch(e){}
+      renderRecenti();
+      toast("«"+r.name+"» tolto dall'elenco.");
+    });
+    list.appendChild(d);
+  });
 }
 
 /* ============================== open & render ============================== */
@@ -672,6 +822,7 @@ async function openBook(b,{announce}={announce:true}){
   try{saved=+localStorage.getItem("lettore:pos:"+book.key)||0;}catch(e){}
   setIndex(Math.min(saved,sents.length-1),{scroll:true});
   if(announce&&saved>0)toast("Riprendo da dove eri rimasto"+(sents[idx].page?" — pagina "+sents[idx].page:"")+".");
+  touchRecenti(book,sents.length);
 }
 
 async function handleFile(file){
@@ -810,6 +961,8 @@ function setPlaying(on){
           numPages:book&&book.numPages?book.numPages:0,
           chiave:book?book.key:""
         }).catch(()=>{});
+        /* se il timer 🌙 era già impostato, ricordalo al servizio appena (ri)nato */
+        if(sleepAt>Date.now())CAP.LetturaService.timer({minuti:(sleepAt-Date.now())/60000}).catch(()=>{});
       }else if(setPlaying._srv){CAP.LetturaService.pause().catch(()=>{});} /* mai prima del primo play */
     }catch(e){}
   }else if(on){requestWake(); holdTtsLock(); silent.play().catch(()=>{}); startAc();}
@@ -848,6 +1001,7 @@ function speak(i){
   const advance=()=>{
     if(my!==seq||!playing)return;
     clearTimeout(watchdog);
+    if(sleepScaduto()){sleepAt=0;sleepChip();setPlaying(false);stopSpeech();setIndex(i);toast("⏰ Timer: lettura in pausa. Buonanotte!");return;}
     if(i+1>=sents.length){setPlaying(false);setIndex(i);toast("Fine del libro. Bella lettura!");return;}
     // in background i timer sono rallentati: prosegui subito senza pausa
     if(document.hidden){if(my===seq&&playing)speak(i+1);return;}
@@ -923,6 +1077,7 @@ document.addEventListener("visibilitychange",()=>{
           setIndex(p.i,{scroll:true});
           playing=!!p.playing; updatePlayBtn();
         }
+        if(p&&typeof p.timer==="number"){sleepAt=p.timer>0?Date.now()+p.timer*1000:0;sleepChip();}
       }).catch(()=>{});}catch(e){}
     }
     return;
@@ -937,6 +1092,7 @@ document.addEventListener("visibilitychange",()=>{
 // Chrome a volte resta bloccato in "paused" dopo lo spegnimento dello schermo: resume periodico innocuo
 setInterval(()=>{
   if(playing&&!CAP){
+    if(sleepScaduto()){sleepAt=0;sleepChip();setPlaying(false);stopSpeech();toast("⏰ Timer: lettura in pausa. Buonanotte!");return;}
     try{speechSynthesis.resume();}catch(e){}
     if(ac&&ac.state!=="running")ac.resume().catch(()=>{});
     if(silent.paused)silent.play().catch(()=>{});
@@ -951,6 +1107,7 @@ playBtn.addEventListener("click",()=>{
 document.querySelector(".wordmark").addEventListener("click",()=>{
   if(book&&reader.style.display==="block"){
     $("resumeBtn").style.display="inline-block";
+    renderRecenti(); // percentuali aggiornate a dove sei arrivato
     showState("landing");
     window.scrollTo(0,0);
   }
@@ -1016,11 +1173,13 @@ document.addEventListener("keydown",e=>{
           setIndex(p.i,{scroll:true});
           playing=!!p.playing; updatePlayBtn();
         }
+        if(p&&typeof p.timer==="number"&&p.timer>0){sleepAt=Date.now()+p.timer*1000;sleepChip();}
       }).catch(()=>{});}catch(e){}
     }
   }else{
     showState("landing");
   }
+  renderRecenti();
 })();
 </script>
 </html>

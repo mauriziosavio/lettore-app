@@ -17,6 +17,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
 import android.support.v4.media.MediaMetadataCompat;
@@ -42,6 +43,7 @@ public class ReadingService extends Service {
     static final String AZ_PAUSE = "com.mauriziosavio.lettore.PAUSE";
     static final String AZ_NEXT = "com.mauriziosavio.lettore.NEXT";
     static final String AZ_PREV = "com.mauriziosavio.lettore.PREV";
+    static final String AZ_STOP = "com.mauriziosavio.lettore.STOP";
 
     private static ReadingService instance;
 
@@ -75,6 +77,8 @@ public class ReadingService extends Service {
     private int gen = 0;      // invalida i callback delle frasi superate
     private int errori = 0;
     private int ultimaPagina = -1;
+    private long fineTimer = 0; // timer di spegnimento: istante (elapsedRealtime) in cui fermarsi
+    private final Runnable timerRun = this::controllaTimer;
 
     /* ============ API statiche usate dal plugin (stesso processo) ============ */
 
@@ -114,21 +118,44 @@ public class ReadingService extends Service {
         }
     }
 
-    /** {i, playing, chiave} — dal servizio vivo o, se spento, dal segnalibro salvato. */
+    /** {i, playing, secondi di timer rimasti} — dal servizio vivo o, se spento, dal segnalibro salvato. */
     static int[] posizione(Context c, String[] chiaveOut) {
         ReadingService s = instance;
         if (s != null) {
             chiaveOut[0] = s.chiave;
-            return new int[]{ s.pos, s.playing ? 1 : 0 };
+            int t = s.fineTimer > 0 ? (int) Math.max(0, (s.fineTimer - SystemClock.elapsedRealtime()) / 1000) : 0;
+            return new int[]{ s.pos, s.playing ? 1 : 0, t };
         }
         try {
             SharedPreferences p = c.getSharedPreferences("lettura", MODE_PRIVATE);
             chiaveOut[0] = p.getString("chiave", "");
-            return new int[]{ p.getInt("pos", -1), 0 };
+            return new int[]{ p.getInt("pos", -1), 0, 0 };
         } catch (Throwable ignored) {
             chiaveOut[0] = "";
-            return new int[]{ -1, 0 };
+            return new int[]{ -1, 0, 0 };
         }
+    }
+
+    /** Timer di spegnimento: fra "minuti" mette in pausa da solo (0 = annulla). */
+    static void timerStatico(double minuti) {
+        ReadingService s = instance;
+        if (s != null) s.main.post(() -> s.impostaTimer(minuti));
+    }
+
+    /** Salva la voce scelta e, se il servizio è vivo, la applica subito. */
+    static void impostaVoce(Context c, String nome) {
+        try {
+            c.getSharedPreferences("lettura", MODE_PRIVATE).edit()
+                .putString("voce", nome == null ? "" : nome).apply();
+        } catch (Throwable ignored) { }
+        ReadingService s = instance;
+        if (s != null) s.main.post(s::applicaVoceScelta);
+    }
+
+    /** Stop dal mini-lettore o dal JS: pausa, segnalibro salvato, servizio e notifica chiusi. */
+    static void fermaStatica() {
+        ReadingService s = instance;
+        if (s != null) s.main.post(s::fermaTutto);
     }
 
     /* ============ ciclo di vita ============ */
@@ -151,7 +178,7 @@ public class ReadingService extends Service {
             session.setCallback(new MediaSessionCompat.Callback() {
                 @Override public void onPlay() { main.post(() -> salta(-1, 0, true)); }
                 @Override public void onPause() { main.post(ReadingService.this::pausa); }
-                @Override public void onStop() { main.post(ReadingService.this::pausa); }
+                @Override public void onStop() { main.post(ReadingService.this::fermaTutto); }
                 @Override public void onSkipToNext() { main.post(() -> spostati(1)); }
                 @Override public void onSkipToPrevious() { main.post(() -> spostati(-1)); }
             });
@@ -175,6 +202,7 @@ public class ReadingService extends Service {
             if (AZ_PAUSE.equals(az)) { pausa(); return START_NOT_STICKY; }
             if (AZ_NEXT.equals(az)) { spostati(1); return START_NOT_STICKY; }
             if (AZ_PREV.equals(az)) { spostati(-1); return START_NOT_STICKY; }
+            if (AZ_STOP.equals(az)) { fermaTutto(); return START_NOT_STICKY; }
         } catch (Throwable ignored) { }
         sincronizza();
         return START_NOT_STICKY;
@@ -189,6 +217,7 @@ public class ReadingService extends Service {
                 ttsPronto = status == TextToSpeech.SUCCESS;
                 if (!ttsPronto) return;
                 try { tts.setLanguage(Locale.ITALIAN); } catch (Throwable ignored) { }
+                applicaVoce(); // la voce italiana scelta dall'utente, se ne ha salvata una
                 try {
                     tts.setAudioAttributes(new AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -279,6 +308,55 @@ public class ReadingService extends Service {
         } catch (Throwable ignored) { }
     }
 
+    /** Stop vero e proprio: come pausa, ma la notifica sparisce e il servizio muore. */
+    private void fermaTutto() {
+        try { pausa(); } catch (Throwable ignored) { }
+        try { fineTimer = 0; main.removeCallbacks(timerRun); } catch (Throwable ignored) { }
+        try { stopForeground(true); } catch (Throwable ignored) { }
+        try { stopSelf(); } catch (Throwable ignored) { }
+    }
+
+    /* ---- timer di spegnimento ---- */
+
+    private void impostaTimer(double minuti) {
+        try {
+            main.removeCallbacks(timerRun);
+            long ms = (long) (minuti * 60_000L);
+            fineTimer = ms > 0 ? SystemClock.elapsedRealtime() + ms : 0;
+            if (fineTimer > 0) main.postDelayed(timerRun, ms);
+        } catch (Throwable ignored) { }
+    }
+
+    private void controllaTimer() {
+        try {
+            if (fineTimer == 0) return;
+            long resto = fineTimer - SystemClock.elapsedRealtime();
+            if (resto > 1000) { main.postDelayed(timerRun, resto); return; } // sveglia arrivata in anticipo
+            fineTimer = 0;
+            if (playing) pausa(); // segnalibro già salvato da pausa(); notifica resta per riprendere
+        } catch (Throwable ignored) { }
+    }
+
+    /* ---- voce ---- */
+
+    /** Applica la voce salvata nelle preferenze al motore TTS (silenziosamente). */
+    private void applicaVoce() {
+        try {
+            if (tts == null) return;
+            String nome = getSharedPreferences("lettura", MODE_PRIVATE).getString("voce", "");
+            if (nome == null || nome.isEmpty()) return;
+            for (android.speech.tts.Voice v : tts.getVoices()) {
+                if (nome.equals(v.getName())) { tts.setVoice(v); break; }
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    /** Cambio voce a caldo: se sta leggendo, la frase corrente riparte con la nuova voce. */
+    private void applicaVoceScelta() {
+        applicaVoce();
+        try { if (playing && ttsPronto) salta(-1, 0, true); } catch (Throwable ignored) { }
+    }
+
     /** a<0 = resta dov'è; rate<=0 = invariato; leggi = avvia/continua la voce. */
     private void salta(int a, float nuovoRate, boolean leggi) {
         try {
@@ -367,7 +445,10 @@ public class ReadingService extends Service {
                     ? new NotificationCompat.Action(android.R.drawable.ic_media_pause, "Pausa", azione(AZ_PAUSE, 2))
                     : new NotificationCompat.Action(android.R.drawable.ic_media_play, "Leggi", azione(AZ_PLAY, 3)))
                 .addAction(new NotificationCompat.Action(
-                    android.R.drawable.ic_media_next, "Frase successiva", azione(AZ_NEXT, 4)));
+                    android.R.drawable.ic_media_next, "Frase successiva", azione(AZ_NEXT, 4)))
+                .addAction(new NotificationCompat.Action(
+                    android.R.drawable.ic_menu_close_clear_cancel, "Chiudi", azione(AZ_STOP, 5)))
+                .setDeleteIntent(azione(AZ_STOP, 6)); // notifica scacciata via = stop
             if (session != null) {
                 nb.setStyle(new androidx.media.app.NotificationCompat.MediaStyle()
                     .setMediaSession(session.getSessionToken())
@@ -434,6 +515,7 @@ public class ReadingService extends Service {
     @Override
     public void onDestroy() {
         instance = null;
+        try { main.removeCallbacks(timerRun); } catch (Throwable ignored) { }
         try { if (tts != null) { tts.stop(); tts.shutdown(); tts = null; } } catch (Throwable ignored) { }
         try {
             if (Build.VERSION.SDK_INT >= 26 && afr != null) {

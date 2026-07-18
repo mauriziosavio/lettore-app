@@ -20,7 +20,7 @@ import java.util.List;
 
 /**
  * Ponte JS ⇄ motore di lettura nativo.
- * JS → nativo: play(coda completa), pause, salta, getPos, stop.
+ * JS → nativo: play(coda completa), pause, salta, getPos, stop, timer, voci, setVoce.
  * Nativo → JS: evento "mediaAction" {azione: pos|stato|fine, i, playing}.
  */
 @CapacitorPlugin(name = "LetturaService")
@@ -28,9 +28,36 @@ public class LetturaServicePlugin extends Plugin {
 
     private static LetturaServicePlugin instance;
 
+    /* TTS di servizio del plugin: serve solo per elencare le voci e far sentire
+       l'anteprima quando si cambia voce da fermi (il motore vero vive nel servizio). */
+    private android.speech.tts.TextToSpeech vtts;
+    private boolean vttsPronto = false;
+    private final List<Runnable> vttsAttesa = new ArrayList<>();
+
     @Override
     public void load() {
         instance = this;
+    }
+
+    /** Esegue r quando il TTS di servizio è inizializzato (o subito, se fallisce). */
+    private void conVoce(Runnable r) {
+        try {
+            if (vtts != null) {
+                if (vttsPronto) r.run(); else vttsAttesa.add(r);
+                return;
+            }
+            vttsAttesa.add(r);
+            vtts = new android.speech.tts.TextToSpeech(getContext(), st -> {
+                vttsPronto = st == android.speech.tts.TextToSpeech.SUCCESS;
+                List<Runnable> coda = new ArrayList<>(vttsAttesa);
+                vttsAttesa.clear();
+                for (Runnable x : coda) { try { x.run(); } catch (Throwable ignored) { } }
+            });
+        } catch (Throwable t) {
+            List<Runnable> coda = new ArrayList<>(vttsAttesa);
+            vttsAttesa.clear();
+            for (Runnable x : coda) { try { x.run(); } catch (Throwable ignored) { } }
+        }
     }
 
     static void emit(String azione, int i, boolean playing) {
@@ -96,7 +123,7 @@ public class LetturaServicePlugin extends Plugin {
         call.resolve();
     }
 
-    /** Posizione corrente del motore nativo: {i, playing, chiave}. */
+    /** Posizione corrente del motore nativo: {i, playing, chiave, timer (secondi rimasti)}. */
     @PluginMethod
     public void getPos(PluginCall call) {
         JSObject o = new JSObject();
@@ -106,15 +133,93 @@ public class LetturaServicePlugin extends Plugin {
             o.put("i", r[0]);
             o.put("playing", r[1] == 1);
             o.put("chiave", chiave[0]);
+            o.put("timer", r.length > 2 ? r[2] : 0);
         } catch (Throwable ignored) {
-            o.put("i", -1); o.put("playing", false); o.put("chiave", "");
+            o.put("i", -1); o.put("playing", false); o.put("chiave", ""); o.put("timer", 0);
         }
         call.resolve(o);
     }
 
     @PluginMethod
     public void stop(PluginCall call) {
+        try { ReadingService.fermaStatica(); } catch (Throwable ignored) { }
         try { getContext().stopService(new Intent(getContext(), ReadingService.class)); } catch (Throwable ignored) { }
+        call.resolve();
+    }
+
+    /** Timer di spegnimento: {minuti} (anche frazionari); 0 = annulla. */
+    @PluginMethod
+    public void timer(PluginCall call) {
+        try { ReadingService.timerStatico(call.getDouble("minuti", 0.0)); } catch (Throwable ignored) { }
+        call.resolve();
+    }
+
+    /** Elenco delle voci italiane del TTS Android: {voci:[{nome, etichetta, predefinita}]}. */
+    @PluginMethod
+    public void voci(PluginCall call) {
+        conVoce(() -> {
+            JSObject o = new JSObject();
+            JSArray arr = new JSArray();
+            try {
+                if (vttsPronto) {
+                    android.speech.tts.Voice def = null;
+                    try { def = vtts.getDefaultVoice(); } catch (Throwable ignored) { }
+                    List<android.speech.tts.Voice> it = new ArrayList<>();
+                    java.util.Set<android.speech.tts.Voice> tutte = vtts.getVoices();
+                    if (tutte != null) for (android.speech.tts.Voice v : tutte) {
+                        try {
+                            if (v.getLocale() == null || !"it".equals(v.getLocale().getLanguage())) continue;
+                            if (v.getFeatures() != null && v.getFeatures().contains(
+                                android.speech.tts.TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED)) continue;
+                            it.add(v);
+                        } catch (Throwable ignored) { }
+                    }
+                    // prima le voci sul dispositivo, poi quelle che richiedono internet; ordine stabile
+                    java.util.Collections.sort(it, (a, b) -> {
+                        int na = a.isNetworkConnectionRequired() ? 1 : 0;
+                        int nb = b.isNetworkConnectionRequired() ? 1 : 0;
+                        if (na != nb) return na - nb;
+                        return a.getName().compareTo(b.getName());
+                    });
+                    int n = 0;
+                    for (android.speech.tts.Voice v : it) {
+                        n++;
+                        boolean pre = def != null && v.getName().equals(def.getName());
+                        String et = "Voce " + n
+                            + (v.isNetworkConnectionRequired() ? " (con internet)" : "")
+                            + (pre ? " — predefinita" : "");
+                        JSObject j = new JSObject();
+                        j.put("nome", v.getName());
+                        j.put("etichetta", et);
+                        j.put("predefinita", pre);
+                        arr.put(j);
+                    }
+                }
+            } catch (Throwable ignored) { }
+            o.put("voci", arr);
+            call.resolve(o);
+        });
+    }
+
+    /** Salva e applica la voce scelta: {nome, anteprima}; con anteprima la fa sentire subito. */
+    @PluginMethod
+    public void setVoce(PluginCall call) {
+        String nome = call.getString("nome", "");
+        boolean anteprima = Boolean.TRUE.equals(call.getBoolean("anteprima", false));
+        try { ReadingService.impostaVoce(getContext(), nome); } catch (Throwable ignored) { }
+        if (anteprima && nome != null && !nome.isEmpty()) {
+            final String scelta = nome;
+            conVoce(() -> {
+                try {
+                    if (!vttsPronto) return;
+                    for (android.speech.tts.Voice v : vtts.getVoices()) {
+                        if (scelta.equals(v.getName())) { vtts.setVoice(v); break; }
+                    }
+                    vtts.speak("Ciao! Leggerò io il tuo libro.",
+                        android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "anteprima");
+                } catch (Throwable ignored) { }
+            });
+        }
         call.resolve();
     }
 
