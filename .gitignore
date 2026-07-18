@@ -1,0 +1,7 @@
+node_modules/
+www/manifest.json
+android/app/build/
+android/.gradle/
+android/build/
+android/app/lettore.p12
+.DS_Store

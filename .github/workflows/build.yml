@@ -1,0 +1,50 @@
+name: APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Dipendenze
+        run: npm ci
+
+      - name: Sincronizza web → android
+        run: npx cap sync android
+
+      - name: Chiave di firma
+        run: printf '%s' "$KEYSTORE_B64" | base64 -d > android/app/lettore.p12
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+
+      - name: Compila APK
+        run: cd android && chmod +x gradlew && ./gradlew assembleRelease --no-daemon
+        env:
+          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
+          VERSION_CODE: ${{ github.run_number }}
+
+      - name: Pubblica release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk lettore.apk
+          gh release create "build-${{ github.run_number }}" lettore.apk \
+            --latest \
+            --title "Lettore APK (build ${{ github.run_number }})" \
+            --notes "Compilazione automatica dal commit ${{ github.sha }}"
