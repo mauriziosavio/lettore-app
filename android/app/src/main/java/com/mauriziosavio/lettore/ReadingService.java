@@ -81,6 +81,7 @@ public class ReadingService extends Service {
     private final Runnable timerRun = this::controllaTimer;
     private long guardiaScade = 0; // cane da guardia: entro quando deve arrivare onDone/onError
     private final Runnable guardia = this::controllaGuardia;
+    private long statInizio = 0;   // statistiche: da quando sta leggendo questa sessione
 
     /* ============ API statiche usate dal plugin (stesso processo) ============ */
 
@@ -160,6 +161,13 @@ public class ReadingService extends Service {
         if (s != null) s.main.post(s::fermaTutto);
     }
 
+    /** Secondi di ascolto della sessione in corso (0 se fermo): per stats() del plugin. */
+    static long statSessioneCorrente() {
+        ReadingService s = instance;
+        if (s == null || s.statInizio == 0) return 0;
+        return Math.max(0, (SystemClock.elapsedRealtime() - s.statInizio) / 1000);
+    }
+
     /* ============ ciclo di vita ============ */
 
     @Override
@@ -233,6 +241,14 @@ public class ReadingService extends Service {
                     @Override public void onDone(String id) { main.post(() -> fineFrase(id, false)); }
                     @Override public void onError(String id) { main.post(() -> fineFrase(id, true)); }
                     @Override public void onError(String id, int code) { main.post(() -> fineFrase(id, true)); }
+                    @Override public void onRangeStart(String id, int start, int end, int frame) {
+                        // karaoke: il WebView (se visibile) evidenzia la parola pronunciata
+                        try {
+                            if (id != null && id.startsWith("u" + gen + "-")) {
+                                LetturaServicePlugin.emitParola(pos, start);
+                            }
+                        } catch (Throwable ignored) { }
+                    }
                 });
                 if (playing) parla();
             }));
@@ -254,6 +270,7 @@ public class ReadingService extends Service {
                 gen++;
                 errori = 0;
                 playing = true;
+                statParte();
                 salva();
                 if (ttsPronto) parla();
                 else initTts();
@@ -319,6 +336,11 @@ public class ReadingService extends Service {
             errori = 0;
             if (pos + 1 >= frasi.size()) {
                 playing = false;
+                statFerma();
+                try { // libro finito: conta per le statistiche
+                    SharedPreferences p = getSharedPreferences("lettura", MODE_PRIVATE);
+                    p.edit().putInt("statLibri", p.getInt("statLibri", 0) + 1).apply();
+                } catch (Throwable ignored) { }
                 salva();
                 refresh();
                 LetturaServicePlugin.emit("fine", -1, false);
@@ -341,6 +363,7 @@ public class ReadingService extends Service {
         try {
             gen++;
             playing = false;
+            statFerma();
             guardiaScade = 0;
             main.removeCallbacks(guardia);
             if (tts != null) tts.stop();
@@ -408,6 +431,7 @@ public class ReadingService extends Service {
             if (frasi != null && pos >= frasi.size()) pos = frasi.size() - 1;
             if (leggi || playing) {
                 playing = true;
+                statParte();
                 if (tts != null) tts.stop();
                 parla();
                 LetturaServicePlugin.emit("stato", pos, true);
@@ -432,6 +456,30 @@ public class ReadingService extends Service {
                 .putInt("pos", pos)
                 .putString("chiave", chiave)
                 .putBoolean("playing", playing)
+                .apply();
+        } catch (Throwable ignored) { }
+    }
+
+    /* ---- statistiche di ascolto (contate qui: valgono anche a schermo spento) ---- */
+
+    private void statParte() {
+        if (statInizio == 0) statInizio = SystemClock.elapsedRealtime();
+    }
+
+    private void statFerma() {
+        try {
+            if (statInizio == 0) return;
+            long sec = (SystemClock.elapsedRealtime() - statInizio) / 1000;
+            statInizio = 0;
+            if (sec <= 0 || sec > 24 * 3600) return;
+            SharedPreferences p = getSharedPreferences("lettura", MODE_PRIVATE);
+            String oggi = new java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US)
+                .format(new java.util.Date());
+            long og = oggi.equals(p.getString("statGiorno", "")) ? p.getLong("statOggi", 0) : 0;
+            p.edit()
+                .putLong("statTot", p.getLong("statTot", 0) + sec)
+                .putString("statGiorno", oggi)
+                .putLong("statOggi", og + sec)
                 .apply();
         } catch (Throwable ignored) { }
     }
@@ -561,6 +609,7 @@ public class ReadingService extends Service {
     @Override
     public void onDestroy() {
         instance = null;
+        try { statFerma(); } catch (Throwable ignored) { }
         try { main.removeCallbacks(timerRun); main.removeCallbacks(guardia); } catch (Throwable ignored) { }
         try { if (tts != null) { tts.stop(); tts.shutdown(); tts = null; } } catch (Throwable ignored) { }
         try {

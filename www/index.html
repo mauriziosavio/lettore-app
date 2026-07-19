@@ -30,6 +30,12 @@
     --hl:rgba(214,164,60,.28); --hl-edge:#D6A43C;
     --shadow:0 10px 30px rgba(0,0,0,.5);
   }
+  :root[data-theme="sepia"]{
+    --paper:#F2E5CE; --paper-2:#EAD9BB; --ink:#453A2B; --muted:#7C6B52;
+    --accent:#7A5C2E; --accent-ink:#FFF8EC; --line:#D8C5A3;
+    --hl:rgba(196,138,44,.30); --hl-edge:#B07D2C;
+    --shadow:0 10px 30px rgba(69,58,43,.18);
+  }
   *{box-sizing:border-box}
   html,body{margin:0;padding:0}
   /* niente alone azzurro del WebView Android sui tocchi */
@@ -138,12 +144,16 @@
   #reader{display:none}
   #reader p{
     font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
-    font-size:1.08rem; line-height:1.75; margin:0 0 1.1em;
+    font-size:calc(1.08rem * var(--fs,1)); line-height:var(--lh,1.75); margin:0 0 1.1em;
     content-visibility:auto; contain-intrinsic-size:auto 120px;
   }
   #reader p.head{
-    font-size:1.32rem; font-weight:700; line-height:1.3;
+    font-size:calc(1.32rem * var(--fs,1)); font-weight:700; line-height:1.3;
     margin:2.1em 0 .9em; text-wrap:balance;
+  }
+  #reader mark.w{ /* karaoke: la parola che la voce sta pronunciando */
+    background:color-mix(in srgb, var(--hl-edge) 42%, transparent);
+    color:inherit; border-radius:3px; padding:0 1px;
   }
   #reader .pgbrk{
     display:flex; align-items:center; gap:12px; margin:1.6em 0;
@@ -205,11 +215,29 @@
     border-radius:10px; padding:6px 8px; font-size:.8rem;
   }
 
-  /* ---------- indice dei capitoli ---------- */
-  #toc{
+  /* ---------- indice dei capitoli + pannello Aa (stessi fogli a scomparsa) ---------- */
+  #toc,#opz{
     position:fixed; inset:0; z-index:30; display:none;
     background:rgba(0,0,0,.42);
   }
+  #opzCard{
+    position:absolute; left:50%; transform:translateX(-50%); bottom:0;
+    width:min(42rem,100%); max-height:80dvh;
+    background:var(--paper); border:1px solid var(--line); border-bottom:none;
+    border-radius:18px 18px 0 0; box-shadow:var(--shadow);
+    display:flex; flex-direction:column;
+  }
+  #opzList{overflow:auto; padding:6px 18px calc(16px + env(safe-area-inset-bottom))}
+  .opzTit{font-size:.74rem; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); font-weight:600; margin:16px 0 8px}
+  .opzRow{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+  #fsMeno,#fsPiu{width:44px;height:38px;border:1px solid var(--line);background:var(--paper-2);color:var(--ink);border-radius:10px;font-size:1.05rem;font-weight:700;cursor:pointer}
+  #fsVal{min-width:52px;text-align:center;font-variant-numeric:tabular-nums;color:var(--muted);font-size:.9rem}
+  .pronRiga{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent);font-size:.9rem}
+  .pronRiga b{font-weight:600}
+  .pronRiga .freccia{color:var(--muted)}
+  .pronRiga .via{margin-left:auto;border:none;background:none;color:var(--muted);cursor:pointer;font-size:.95rem;padding:6px}
+  #pronDa,#pronA{flex:1;min-width:100px;border:1px solid var(--line);background:var(--paper);color:var(--ink);border-radius:10px;padding:9px 10px;font-size:.9rem}
+  #pronAdd{border:none;background:var(--accent);color:var(--accent-ink);border-radius:10px;padding:9px 14px;font-weight:600;cursor:pointer}
   #tocCard{
     position:absolute; left:50%; transform:translateX(-50%); bottom:0;
     width:min(42rem,100%); max-height:74dvh;
@@ -217,12 +245,12 @@
     border-radius:18px 18px 0 0; box-shadow:var(--shadow);
     display:flex; flex-direction:column;
   }
-  #tocHead{
+  .shHead{
     display:flex; align-items:center; justify-content:space-between;
     padding:14px 18px 10px; border-bottom:1px solid var(--line);
     font-weight:700; font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
   }
-  #tocChiudi{border:none;background:none;color:var(--muted);font-size:1.05rem;cursor:pointer;padding:6px 10px;border-radius:50%}
+  .shChiudi{border:none;background:none;color:var(--muted);font-size:1.05rem;cursor:pointer;padding:6px 10px;border-radius:50%}
   #tocList{overflow:auto; padding:8px 10px calc(14px + env(safe-area-inset-bottom))}
   .tocIt{
     display:flex; align-items:baseline; gap:12px;
@@ -246,7 +274,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.15</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.16</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -269,6 +297,7 @@
       <h2>Letti di recente</h2>
       <div id="recList"></div>
     </div>
+    <p id="statLine" style="display:none;margin:18px 0 0;font-size:.88rem;color:var(--muted)"></p>
     <ul class="facts">
       <li><b>Segnalibro automatico.</b>&nbsp;Chiudi quando vuoi: alla riapertura riprende dalla frase esatta.</li>
       <li><b>Tutto sul tuo dispositivo.</b>&nbsp;Il file non viene caricato da nessuna parte: lettura e voce restano in locale.</li>
@@ -316,15 +345,54 @@
       <select id="voiceSel" aria-label="Voce"></select>
       <button class="chip" id="sleepBtn" type="button" aria-label="Timer di spegnimento">🌙 Timer</button>
       <button class="chip" id="tocBtn" type="button" aria-label="Indice dei capitoli">☰ Capitoli</button>
+      <button class="chip" id="opzBtn" type="button" aria-label="Aspetto e pronuncia">Aa</button>
     </div>
   </div>
 </footer>
 
+<div id="opz" aria-hidden="true">
+  <div id="opzCard" role="dialog" aria-label="Aspetto e pronuncia">
+    <div class="shHead">
+      <span>Aspetto e pronuncia</span>
+      <button id="opzChiudi" class="shChiudi" type="button" aria-label="Chiudi">✕</button>
+    </div>
+    <div id="opzList">
+      <div class="opzTit">Tema</div>
+      <div class="opzRow chips" id="temaChips">
+        <button class="chip" data-tema="" type="button">Auto</button>
+        <button class="chip" data-tema="light" type="button">Chiaro</button>
+        <button class="chip" data-tema="sepia" type="button">Seppia</button>
+        <button class="chip" data-tema="dark" type="button">Scuro</button>
+      </div>
+      <div class="opzTit">Dimensione del testo</div>
+      <div class="opzRow">
+        <button id="fsMeno" type="button" aria-label="Riduci il carattere">A−</button>
+        <span id="fsVal">100%</span>
+        <button id="fsPiu" type="button" aria-label="Ingrandisci il carattere">A+</button>
+      </div>
+      <div class="opzTit">Interlinea</div>
+      <div class="opzRow chips" id="lhChips">
+        <button class="chip" data-lh="1.55" type="button">Compatta</button>
+        <button class="chip" data-lh="1.75" type="button">Normale</button>
+        <button class="chip" data-lh="2.05" type="button">Ariosa</button>
+      </div>
+      <div class="opzTit">Pronunce personalizzate</div>
+      <p style="margin:0 0 10px;font-size:.85rem;color:var(--muted)">Se la voce legge male un nome o una sigla, scrivi qui come deve pronunciarla.</p>
+      <div id="pronList"></div>
+      <div class="opzRow" style="margin-top:10px">
+        <input id="pronDa" type="text" placeholder="Scritto (es. Dr.)" autocapitalize="off">
+        <input id="pronA" type="text" placeholder="Letto (es. dottor)" autocapitalize="off">
+        <button id="pronAdd" type="button">Aggiungi</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="toc" aria-hidden="true">
   <div id="tocCard" role="dialog" aria-label="Indice dei capitoli">
-    <div id="tocHead">
+    <div class="shHead">
       <span>Capitoli</span>
-      <button id="tocChiudi" type="button" aria-label="Chiudi l'indice">✕</button>
+      <button id="tocChiudi" class="shChiudi" type="button" aria-label="Chiudi l'indice">✕</button>
     </div>
     <div id="tocList"></div>
   </div>
@@ -419,14 +487,27 @@ function toast(msg,ms){
 
 /* ============================== settings ============================== */
 let cps1=14; // caratteri letti al secondo a velocità 1× (si ricalibra ascoltando)
+let fs=1, lh=1.75, tema="", pron=[]; // aspetto e pronunce personalizzate
 try{
   const s=JSON.parse(localStorage.getItem("lettore:settings")||"{}");
   if(s.rate)rate=s.rate; if(s.voiceName)voiceName=s.voiceName;
   if(s.cps1>4&&s.cps1<40)cps1=s.cps1;
+  if(s.fs>=0.8&&s.fs<=1.6)fs=s.fs;
+  if(s.lh>=1.3&&s.lh<=2.4)lh=s.lh;
+  if(["light","dark","sepia"].includes(s.tema))tema=s.tema;
+  if(Array.isArray(s.pron))pron=s.pron.filter(r=>r&&r.da&&typeof r.a==="string").slice(0,100);
 }catch(e){}
 function saveSettings(){
-  try{localStorage.setItem("lettore:settings",JSON.stringify({rate,voiceName,cps1}));}catch(e){}
+  try{localStorage.setItem("lettore:settings",JSON.stringify(
+    {rate,voiceName,cps1,fs,lh,tema,pron:pron.map(r=>({da:r.da,a:r.a}))}));}catch(e){}
 }
+function applicaAspetto(){
+  const r=document.documentElement;
+  r.style.setProperty("--fs",fs);
+  r.style.setProperty("--lh",lh);
+  if(tema)r.dataset.theme=tema; else delete r.dataset.theme;
+}
+applicaAspetto();
 
 /* ============================== voices ============================== */
 let voices=[];
@@ -509,12 +590,15 @@ if(CAP){ /* nell'APK le voci sono quelle del TTS di Android: le chiediamo al plu
       if(!d)return;
       if(d.azione==="pos"&&typeof d.i==="number"){
         if(book&&d.i>=0&&d.i<sents.length)setIndex(d.i);
+      }else if(d.azione==="parola"&&typeof d.i==="number"){
+        if(book&&d.i>=0&&d.i<sents.length&&playing)evidenziaParola(d.i,d.da||0);
       }else if(d.azione==="stato"){
         playing=!!d.playing; updatePlayBtn();
+        if(!playing)ripristinaParola();
         /* se la pausa arriva allo scadere del timer, spegni anche il chip 🌙 */
         if(!playing&&sleepAt&&Date.now()>=sleepAt-2000){sleepAt=0;sleepChip();toast("⏰ Timer: lettura in pausa. Buonanotte!");}
       }else if(d.azione==="fine"){
-        playing=false; updatePlayBtn(); toast("Fine del libro. Bella lettura!");
+        playing=false; updatePlayBtn(); ripristinaParola(); toast("Fine del libro. Bella lettura!");
       }
     });
   }catch(e){}
@@ -827,6 +911,52 @@ function renderRecenti(){
   });
 }
 
+/* ============================== statistiche di ascolto ============================== */
+/* Nell'APK i secondi li conta il SERVIZIO NATIVO (valgono anche a schermo
+   spento); sul web si accumulano qui a ogni frase completata. */
+function chiaveGiorno(){const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");}
+function statAggiungi(sec){
+  if(CAP||sec<=0||sec>600)return;
+  try{
+    const j=JSON.parse(localStorage.getItem("lettore:stats")||"{}");
+    const oggi=chiaveGiorno();
+    j.tot=(j.tot||0)+sec;
+    j.oggi=(j.giorno===oggi?(j.oggi||0):0)+sec;
+    j.giorno=oggi;
+    localStorage.setItem("lettore:stats",JSON.stringify(j));
+  }catch(e){}
+}
+function statLibro(){
+  if(CAP)return;
+  try{
+    const j=JSON.parse(localStorage.getItem("lettore:stats")||"{}");
+    j.libri=(j.libri||0)+1;
+    localStorage.setItem("lettore:stats",JSON.stringify(j));
+  }catch(e){}
+}
+function fmtOre(sec){
+  const m=Math.round(sec/60);
+  if(m<1)return "meno di 1 min";
+  if(m<60)return m+" min";
+  return Math.floor(m/60)+" h "+String(m%60).padStart(2,"0")+" min";
+}
+async function renderStats(){
+  let s=null;
+  if(CAP){
+    try{s=await CAP.LetturaService.stats();}catch(e){}
+  }else{
+    try{
+      const j=JSON.parse(localStorage.getItem("lettore:stats")||"{}");
+      s={oggi:j.giorno===chiaveGiorno()?j.oggi||0:0,totale:j.tot||0,libri:j.libri||0};
+    }catch(e){}
+  }
+  const el=$("statLine");
+  if(!s||(!s.totale&&!s.oggi)){el.style.display="none";return;}
+  el.style.display="block";
+  el.textContent="🎧 Ascoltato: oggi "+fmtOre(s.oggi||0)+" · in totale "+fmtOre(s.totale||0)
+    +(s.libri?(" · "+s.libri+(s.libri===1?" libro finito":" libri finiti")):"");
+}
+
 /* ============================== open & render ============================== */
 function showState(which){
   landing.style.display=which==="landing"?"block":"none";
@@ -973,6 +1103,7 @@ async function handleFile(file){
 /* ============================== position ============================== */
 function setIndex(i,opts){
   i=Math.max(0,Math.min(i,sents.length-1));
+  if(karaoke.i>=0&&karaoke.i!==i)ripristinaParola();
   if(spans[idx])spans[idx].classList.remove("cur");
   idx=i;
   const sp=spans[idx];
@@ -990,7 +1121,10 @@ function setIndex(i,opts){
   const s=sents[idx];
   pageLbl.textContent=s&&s.page?("Pag. "+s.page+(book.numPages?" di "+book.numPages:"")):("Frase "+(idx+1)+" di "+sents.length);
   const ora=Date.now(); // frase completata in lettura → misura la velocità reale della voce
-  if(playing&&setIndex._last===i-1&&setIndex._lastT)etaCalibra(sents[i-1]&&sents[i-1].t,ora-setIndex._lastT);
+  if(playing&&setIndex._last===i-1&&setIndex._lastT){
+    etaCalibra(sents[i-1]&&sents[i-1].t,ora-setIndex._lastT);
+    statAggiungi((ora-setIndex._lastT)/1000);
+  }
   setIndex._last=i; setIndex._lastT=ora;
   etaAggiorna();
   try{localStorage.setItem("lettore:pos:"+book.key,String(idx));}catch(e){}
@@ -1128,19 +1262,57 @@ function pauseAfter(t,cur,next){
   if(/,["»”')\]]*$/.test(t))return 200;
   return 80; // frase tagliata dall'estrazione: riprendi quasi subito
 }
-/* Il testo consegnato alla voce: via i simboli che il TTS leggerebbe ad alta
-   voce ("asterisco", virgolette…). Sullo schermo resta il testo originale.
-   Gli apostrofi (l'amico) NON si toccano. */
+/* Il testo consegnato alla voce: prima le pronunce personalizzate dell'utente,
+   poi via i simboli che il TTS leggerebbe ad alta voce ("asterisco",
+   virgolette…). Sullo schermo resta il testo originale. Gli apostrofi
+   (l'amico) NON si toccano. */
+function escRx(s){return s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");}
 function testoDaLeggere(t){
+  for(const r of pron){
+    if(!r.da)continue;
+    if(!r.rx)r.rx=new RegExp("(^|[^A-Za-zÀ-ÿ0-9])"+escRx(r.da)+"(?=$|[^A-Za-zÀ-ÿ0-9])","gi");
+    t=t.replace(r.rx,(m,p)=>p+r.a);
+  }
   return t
     .replace(/["«»“”„]/g,"")
     .replace(/[*#_|~^•·◦▪▸►★☆✦❖†‡¶{}[\]\\]+/g," ")
     .replace(/\.{4,}/g,"…")
     .replace(/\s{2,}/g," ").trim();
 }
+/* ---- karaoke: evidenzia la parola che la voce sta pronunciando ----
+   La voce legge il testo RIPULITO, lo schermo mostra quello originale: le
+   parole (sequenze di lettere/numeri) restano però allineate, quindi dalla
+   posizione nel testo pulito ricaviamo QUALE parola è, e la marchiamo
+   nell'originale. */
+let karaoke={i:-1,clean:"",cleanI:-1};
+function nParola(testo,pos){
+  const re=/[A-Za-zÀ-ÿ0-9]+/g; let n=0,m;
+  while((m=re.exec(testo))){
+    if(pos<m.index+m[0].length)return pos>=m.index?n:Math.max(0,n-1);
+    n++;
+  }
+  return Math.max(0,n-1);
+}
+function ripristinaParola(){
+  if(karaoke.i>=0&&spans[karaoke.i]&&sents[karaoke.i])spans[karaoke.i].textContent=sents[karaoke.i].t;
+  karaoke.i=-1;
+}
+function evidenziaParola(i,da){
+  if(document.hidden||!spans[i]||!sents[i])return;
+  if(karaoke.cleanI!==i){karaoke.clean=testoDaLeggere(sents[i].t);karaoke.cleanI=i;}
+  const nth=nParola(karaoke.clean,da);
+  const t=sents[i].t, re=/[A-Za-zÀ-ÿ0-9]+/g;
+  let m,k=0,r=null;
+  while((m=re.exec(t))){if(k===nth){r=m;break;}k++;}
+  if(!r)return;
+  if(karaoke.i!==i)ripristinaParola();
+  karaoke.i=i;
+  spans[i].innerHTML=esc(t.slice(0,r.index))+'<mark class="w">'+esc(r[0])+"</mark>"+esc(t.slice(r.index+r[0].length));
+}
 function stopSpeech(){
   seq++;
   clearTimeout(watchdog);
+  ripristinaParola();
   if(CAP)return; // il motore nativo si ferma via pause()/salta(), non da qui
   speechSynthesis.cancel();
 }
@@ -1154,7 +1326,7 @@ function speak(i){
     if(my!==seq||!playing)return;
     clearTimeout(watchdog);
     if(sleepScaduto()){sleepAt=0;sleepChip();setPlaying(false);stopSpeech();setIndex(i);toast("⏰ Timer: lettura in pausa. Buonanotte!");return;}
-    if(i+1>=sents.length){setPlaying(false);setIndex(i);toast("Fine del libro. Bella lettura!");return;}
+    if(i+1>=sents.length){setPlaying(false);setIndex(i);statLibro();toast("Fine del libro. Bella lettura!");return;}
     // in background i timer sono rallentati: prosegui subito senza pausa
     if(document.hidden){if(my===seq&&playing)speak(i+1);return;}
     setTimeout(()=>{if(my===seq&&playing)speak(i+1);},pauseAfter(s.t,s,sents[i+1]));
@@ -1167,6 +1339,7 @@ function speak(i){
   }
   const u=new SpeechSynthesisUtterance(testoDaLeggere(s.t)||s.t);
   u.lang="it-IT"; u.rate=rate;
+  u.onboundary=e=>{if(my===seq&&playing&&e.name==="word")evidenziaParola(i,e.charIndex);};
   const v=voices[+voiceSel.value];
   if(v){u.voice=v;u.lang=v.lang;}
   u.onstart=()=>{if(my===seq){errStreak=0;killStreak=0;}};
@@ -1258,6 +1431,56 @@ playBtn.addEventListener("click",()=>{
   if(playing){setPlaying(false);stopSpeech();}
   else{setPlaying(true);speak(idx);}
 });
+/* ============================== pannello Aa: aspetto e pronunce ============================== */
+const opzEl=$("opz");
+function opzChiudi(){opzEl.style.display="none";}
+function opzSync(){
+  document.querySelectorAll("#temaChips .chip").forEach(c=>c.classList.toggle("on",c.dataset.tema===tema));
+  document.querySelectorAll("#lhChips .chip").forEach(c=>c.classList.toggle("on",Math.abs(+c.dataset.lh-lh)<0.01));
+  $("fsVal").textContent=Math.round(fs*100)+"%";
+}
+/* se sta leggendo, riconsegna il libro alla voce con le pronunce aggiornate */
+function riconsegna(){
+  if(!playing)return;
+  if(CAP)setPlaying(true);           // rimanda play() con le frasi ripulite di nuovo
+  else{stopSpeech();speak(idx);}
+}
+function pronRender(){
+  const box=$("pronList"); box.innerHTML="";
+  pron.forEach((r,k)=>{
+    const d=document.createElement("div"); d.className="pronRiga";
+    d.innerHTML='<b></b><span class="freccia">→</span><span></span><button class="via" type="button" aria-label="Elimina">✕</button>';
+    d.querySelector("b").textContent=r.da;
+    d.querySelectorAll("span")[1].textContent=r.a;
+    d.querySelector(".via").addEventListener("click",()=>{
+      pron.splice(k,1); saveSettings(); pronRender(); riconsegna();
+    });
+    box.appendChild(d);
+  });
+}
+$("opzBtn").addEventListener("click",()=>{opzSync();pronRender();opzEl.style.display="block";});
+$("opzChiudi").addEventListener("click",opzChiudi);
+opzEl.addEventListener("click",e=>{if(e.target===opzEl)opzChiudi();});
+document.querySelectorAll("#temaChips .chip").forEach(c=>c.addEventListener("click",()=>{
+  tema=c.dataset.tema; saveSettings(); applicaAspetto(); opzSync();
+}));
+document.querySelectorAll("#lhChips .chip").forEach(c=>c.addEventListener("click",()=>{
+  lh=+c.dataset.lh; saveSettings(); applicaAspetto(); opzSync();
+}));
+$("fsMeno").addEventListener("click",()=>{fs=Math.max(0.8,Math.round((fs-0.05)*100)/100);saveSettings();applicaAspetto();opzSync();});
+$("fsPiu").addEventListener("click",()=>{fs=Math.min(1.6,Math.round((fs+0.05)*100)/100);saveSettings();applicaAspetto();opzSync();});
+$("pronAdd").addEventListener("click",()=>{
+  const da=$("pronDa").value.trim(), a=$("pronA").value.trim();
+  if(!da||!a){toast("Scrivi sia la forma scritta sia come va letta.");return;}
+  pron=pron.filter(r=>r.da.toLowerCase()!==da.toLowerCase());
+  pron.unshift({da,a});
+  if(pron.length>100)pron.length=100;
+  saveSettings(); pronRender();
+  $("pronDa").value=""; $("pronA").value="";
+  toast("D'ora in poi «"+da+"» si leggerà «"+a+"».");
+  riconsegna();
+});
+
 /* ============================== indice dei capitoli ============================== */
 const tocEl=$("toc"), tocList=$("tocList");
 function tocChiudi(){tocEl.style.display="none";}
@@ -1290,7 +1513,7 @@ $("tocBtn").addEventListener("click",()=>{
 });
 $("tocChiudi").addEventListener("click",tocChiudi);
 tocEl.addEventListener("click",e=>{if(e.target===tocEl)tocChiudi();});
-document.addEventListener("keydown",e=>{if(e.key==="Escape")tocChiudi();});
+document.addEventListener("keydown",e=>{if(e.key==="Escape"){tocChiudi();opzChiudi();}});
 
 /* ⏹ chiude la lettura del tutto: nell'APK spegne anche servizio e notifica */
 $("stopBtn").addEventListener("click",()=>{
@@ -1307,6 +1530,7 @@ document.querySelector(".wordmark").addEventListener("click",()=>{
   if(book&&reader.style.display==="block"){
     $("resumeBtn").style.display="inline-block";
     renderRecenti(); // percentuali aggiornate a dove sei arrivato
+    renderStats();
     showState("landing");
     window.scrollTo(0,0);
   }
@@ -1390,6 +1614,7 @@ document.addEventListener("keydown",e=>{
     showState("landing");
   }
   renderRecenti();
+  renderStats();
 })();
 </script>
 </html>

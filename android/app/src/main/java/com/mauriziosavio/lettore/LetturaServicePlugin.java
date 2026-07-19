@@ -73,6 +73,20 @@ public class LetturaServicePlugin extends Plugin {
         } catch (Throwable ignored) { }
     }
 
+    /** Karaoke: la voce sta pronunciando la parola che inizia al carattere "da" della frase i. */
+    static void emitParola(int i, int da) {
+        try {
+            LetturaServicePlugin p = instance;
+            if (p != null) {
+                JSObject o = new JSObject();
+                o.put("azione", "parola");
+                o.put("i", i);
+                o.put("da", da);
+                p.notifyListeners("mediaAction", o);
+            }
+        } catch (Throwable ignored) { }
+    }
+
     /** Consegna l'intero libro al motore nativo e avvia la lettura da "da". */
     @PluginMethod
     public void play(PluginCall call) {
@@ -145,6 +159,26 @@ public class LetturaServicePlugin extends Plugin {
         try { ReadingService.fermaStatica(); } catch (Throwable ignored) { }
         try { getContext().stopService(new Intent(getContext(), ReadingService.class)); } catch (Throwable ignored) { }
         call.resolve();
+    }
+
+    /** Statistiche di ascolto: {oggi, totale} in secondi e {libri} finiti. */
+    @PluginMethod
+    public void stats(PluginCall call) {
+        JSObject o = new JSObject();
+        try {
+            android.content.SharedPreferences p =
+                getContext().getSharedPreferences("lettura", android.content.Context.MODE_PRIVATE);
+            String oggi = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                .format(new java.util.Date());
+            long extra = ReadingService.statSessioneCorrente(); // sessione in corso, non ancora salvata
+            long og = oggi.equals(p.getString("statGiorno", "")) ? p.getLong("statOggi", 0) : 0;
+            o.put("oggi", og + extra);
+            o.put("totale", p.getLong("statTot", 0) + extra);
+            o.put("libri", p.getInt("statLibri", 0));
+        } catch (Throwable ignored) {
+            o.put("oggi", 0); o.put("totale", 0); o.put("libri", 0);
+        }
+        call.resolve(o);
     }
 
     /** Timer di spegnimento: {minuti} (anche frazionari); 0 = annulla. */
