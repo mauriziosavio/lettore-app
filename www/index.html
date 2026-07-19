@@ -205,6 +205,35 @@
     border-radius:10px; padding:6px 8px; font-size:.8rem;
   }
 
+  /* ---------- indice dei capitoli ---------- */
+  #toc{
+    position:fixed; inset:0; z-index:30; display:none;
+    background:rgba(0,0,0,.42);
+  }
+  #tocCard{
+    position:absolute; left:50%; transform:translateX(-50%); bottom:0;
+    width:min(42rem,100%); max-height:74dvh;
+    background:var(--paper); border:1px solid var(--line); border-bottom:none;
+    border-radius:18px 18px 0 0; box-shadow:var(--shadow);
+    display:flex; flex-direction:column;
+  }
+  #tocHead{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:14px 18px 10px; border-bottom:1px solid var(--line);
+    font-weight:700; font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  }
+  #tocChiudi{border:none;background:none;color:var(--muted);font-size:1.05rem;cursor:pointer;padding:6px 10px;border-radius:50%}
+  #tocList{overflow:auto; padding:8px 10px calc(14px + env(safe-area-inset-bottom))}
+  .tocIt{
+    display:flex; align-items:baseline; gap:12px;
+    padding:12px 10px; border-radius:10px; cursor:pointer; font-size:.95rem;
+  }
+  .tocIt+.tocIt{border-top:1px solid color-mix(in srgb, var(--line) 55%, transparent)}
+  .tocIt .tocTit{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .tocIt .tocPg{flex:none; color:var(--muted); font-size:.78rem; font-variant-numeric:tabular-nums}
+  .tocIt.cur{background:var(--hl); box-shadow:inset 3px 0 0 var(--hl-edge)}
+  .tocIt:focus-visible{outline:2px solid var(--accent); outline-offset:-2px}
+
   /* ---------- toast ---------- */
   #toast{
     position:fixed; left:50%; bottom:calc(215px + env(safe-area-inset-bottom)); transform:translateX(-50%) translateY(8px);
@@ -217,7 +246,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.14</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.15</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -286,9 +315,20 @@
       </div>
       <select id="voiceSel" aria-label="Voce"></select>
       <button class="chip" id="sleepBtn" type="button" aria-label="Timer di spegnimento">🌙 Timer</button>
+      <button class="chip" id="tocBtn" type="button" aria-label="Indice dei capitoli">☰ Capitoli</button>
     </div>
   </div>
 </footer>
+
+<div id="toc" aria-hidden="true">
+  <div id="tocCard" role="dialog" aria-label="Indice dei capitoli">
+    <div id="tocHead">
+      <span>Capitoli</span>
+      <button id="tocChiudi" type="button" aria-label="Chiudi l'indice">✕</button>
+    </div>
+    <div id="tocList"></div>
+  </div>
+</div>
 
 <div id="toast" role="status"></div>
 <input type="file" id="fileInput" accept=".pdf,.docx,.doc,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" hidden>
@@ -365,6 +405,7 @@ const landing=$("landing"), busy=$("busy"), busyMsg=$("busyMsg"), reader=$("read
 let book=null;          // {key,name,pars:[{text,page}],numPages}
 let sents=[];           // {t,par,page}
 let etaResto=[];        // caratteri da leggere dalla frase i alla fine
+let capitoli=[];        // {i:indice frase, t:titolo, page} per l'indice ☰
 let spans=[];           // span elements, aligned with sents
 let idx=0, playing=false, seq=0, watchdog=null, errStreak=0, killStreak=0;
 let rate=1, voiceName=null;
@@ -795,19 +836,31 @@ function showState(which){
 }
 function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
 
+/* Titoli nei DOCX/TXT (i PDF li riconoscono già dalla dimensione del carattere):
+   "Capitolo 3", "XII", righe corte tutte in maiuscolo. */
+function rilevaTitolo(t){
+  t=t.trim();
+  if(t.length>80)return false;
+  if(/^(capitolo|cap\.|parte|libro|sezione|prologo|epilogo|introduzione|prefazione|premessa|conclusione|appendice|atto|scena)\b/i.test(t))return true;
+  if(/^[IVXLCDM]{1,7}(\s*[.·–—-].*)?$/.test(t)&&!/^\d/.test(t))return true; // "XII" o "XII — Titolo"
+  const lettere=t.replace(/[^A-Za-zÀ-ÿ]/g,"");
+  if(lettere.length>=3&&lettere===lettere.toUpperCase()&&t.length<=60)return true;
+  return false;
+}
 function renderBook(){
-  sents=[]; spans=[];
+  sents=[]; spans=[]; capitoli=[];
   /* L'estrazione (soprattutto dai PDF) a volte spezza un capoverso a metà frase:
      il pezzo dopo inizia con la minuscola. Ricucilo, altrimenti la lettura fa
      una pausa da "fine paragrafo" dove non c'è nessuna punteggiatura. */
   const pars=[];
   for(const par of book.pars){
+    const head=par.head!==undefined?!!par.head:rilevaTitolo(par.text);
     const p=pars[pars.length-1];
-    if(p&&!p.head&&!par.head&&/^[a-zà-ú]/.test(par.text)&&/[A-Za-zà-úÀ-Ú0-9,;:‐-]$/.test(p.text)){
+    if(p&&!p.head&&!head&&/^[a-zà-ú]/.test(par.text)&&/[A-Za-zà-úÀ-Ú0-9,;:‐-]$/.test(p.text)){
       if(/[‐-]$/.test(p.text))p.text=p.text.slice(0,-1)+par.text; // parola sillabata
       else p.text+=" "+par.text;
     }else{
-      pars.push({text:par.text,page:par.page,head:par.head});
+      pars.push({text:par.text,page:par.page,head:head});
     }
   }
   const html=[]; let lastPage=null, si=0;
@@ -819,6 +872,11 @@ function renderBook(){
     /* le righe di soli simboli (es. i separatori «* * *») non si leggono: via */
     const pieces=splitSentences(par.text).filter(t=>/[A-Za-zÀ-ÿ0-9]/.test(t));
     if(!pieces.length)return;
+    if(par.head)capitoli.push({
+      i:si,
+      t:par.text.length>72?par.text.slice(0,69)+"…":par.text,
+      page:par.page,
+    });
     const inner=pieces.map(t=>{
       sents.push({t,par:pi,page:par.page,head:!!par.head});
       return '<span class="s" data-i="'+(si++)+'">'+esc(t)+"</span>";
@@ -1200,6 +1258,40 @@ playBtn.addEventListener("click",()=>{
   if(playing){setPlaying(false);stopSpeech();}
   else{setPlaying(true);speak(idx);}
 });
+/* ============================== indice dei capitoli ============================== */
+const tocEl=$("toc"), tocList=$("tocList");
+function tocChiudi(){tocEl.style.display="none";}
+$("tocBtn").addEventListener("click",()=>{
+  if(!capitoli.length){
+    toast("In questo libro non ho riconosciuto capitoli: spostati con la barra o toccando una frase.",4500);
+    return;
+  }
+  tocList.innerHTML="";
+  let corrente=-1;
+  capitoli.forEach((c,k)=>{if(c.i<=idx)corrente=k;});
+  capitoli.forEach((c,k)=>{
+    const d=document.createElement("div");
+    d.className="tocIt"+(k===corrente?" cur":"");
+    d.setAttribute("role","button"); d.tabIndex=0;
+    d.innerHTML='<span class="tocTit"></span>'+(c.page?'<span class="tocPg">pag. '+c.page+"</span>":"");
+    d.querySelector(".tocTit").textContent=c.t;
+    const vai=()=>{
+      tocChiudi();
+      if(playing){stopSpeech();speak(c.i);}
+      else setIndex(c.i,{scroll:true});
+    };
+    d.addEventListener("click",vai);
+    d.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();vai();}});
+    tocList.appendChild(d);
+  });
+  tocEl.style.display="block";
+  const cur=tocList.querySelector(".cur");
+  if(cur)cur.scrollIntoView({block:"center"});
+});
+$("tocChiudi").addEventListener("click",tocChiudi);
+tocEl.addEventListener("click",e=>{if(e.target===tocEl)tocChiudi();});
+document.addEventListener("keydown",e=>{if(e.key==="Escape")tocChiudi();});
+
 /* ⏹ chiude la lettura del tutto: nell'APK spegne anche servizio e notifica */
 $("stopBtn").addEventListener("click",()=>{
   setPlaying(false); stopSpeech();
