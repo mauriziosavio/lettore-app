@@ -217,7 +217,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.13</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.14</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -261,7 +261,7 @@
     <div id="bar" role="slider" aria-label="Posizione nel libro" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0">
       <div id="barTrack"><div id="barFill"></div><div id="barKnob"></div></div>
     </div>
-    <div class="meta"><span id="pctLbl">0%</span><span id="pageLbl"></span></div>
+    <div class="meta"><span id="pctLbl">0%</span><span id="etaLbl"></span><span id="pageLbl"></span></div>
     <div class="ctrls">
       <button id="prevBtn" type="button" aria-label="Frase precedente">
         <svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h2v14H6zM20 5v14L9.5 12z"></path></svg>
@@ -358,12 +358,13 @@ if(!window.speechSynthesis){ /* il WebView Android non ha speechSynthesis: finto
 const landing=$("landing"), busy=$("busy"), busyMsg=$("busyMsg"), reader=$("reader"),
       player=$("player"), bookTitle=$("bookTitle"),
       barEl=$("bar"), barFill=$("barFill"), barKnob=$("barKnob"),
-      pctLbl=$("pctLbl"), pageLbl=$("pageLbl"),
+      pctLbl=$("pctLbl"), pageLbl=$("pageLbl"), etaLbl=$("etaLbl"),
       playBtn=$("playBtn"), icoPlay=$("icoPlay"), icoPause=$("icoPause"),
       voiceSel=$("voiceSel"), fileInput=$("fileInput"), toastEl=$("toast");
 
 let book=null;          // {key,name,pars:[{text,page}],numPages}
 let sents=[];           // {t,par,page}
+let etaResto=[];        // caratteri da leggere dalla frase i alla fine
 let spans=[];           // span elements, aligned with sents
 let idx=0, playing=false, seq=0, watchdog=null, errStreak=0, killStreak=0;
 let rate=1, voiceName=null;
@@ -376,12 +377,14 @@ function toast(msg,ms){
 }
 
 /* ============================== settings ============================== */
+let cps1=14; // caratteri letti al secondo a velocità 1× (si ricalibra ascoltando)
 try{
   const s=JSON.parse(localStorage.getItem("lettore:settings")||"{}");
   if(s.rate)rate=s.rate; if(s.voiceName)voiceName=s.voiceName;
+  if(s.cps1>4&&s.cps1<40)cps1=s.cps1;
 }catch(e){}
 function saveSettings(){
-  try{localStorage.setItem("lettore:settings",JSON.stringify({rate,voiceName}));}catch(e){}
+  try{localStorage.setItem("lettore:settings",JSON.stringify({rate,voiceName,cps1}));}catch(e){}
 }
 
 /* ============================== voices ============================== */
@@ -496,6 +499,7 @@ document.querySelectorAll("#rateChips .chip").forEach(ch=>{
   ch.addEventListener("click",()=>{
     document.querySelectorAll("#rateChips .chip").forEach(c=>c.classList.remove("on"));
     ch.classList.add("on"); rate=+ch.dataset.rate; saveSettings();
+    etaAggiorna(); // il tempo rimasto dipende dalla velocità scelta
     if(playing){stopSpeech(); speak(idx);}
   });
 });
@@ -824,6 +828,35 @@ function renderBook(){
   reader.innerHTML=html.join("");
   spans=Array.from(reader.querySelectorAll("span.s"));
   bookTitle.textContent=book.name;
+  etaResto=new Array(sents.length+1); etaResto[sents.length]=0;
+  for(let i=sents.length-1;i>=0;i--)etaResto[i]=etaResto[i+1]+sents[i].t.length;
+}
+
+/* ============================== tempo rimanente ============================== */
+/* Stima di quanto manca alla fine: caratteri rimasti / velocità della voce.
+   La velocità (cps1, a 1×) parte da un valore tipico e si ricalibra ascoltando:
+   ogni frase completata durante la lettura misura il tempo reale impiegato. */
+let etaCal={chars:0,ms:0};
+function etaCalibra(fraseLetta,dtMs){
+  if(dtMs<200||dtMs>60000||!fraseLetta)return;
+  etaCal.chars+=fraseLetta.length;
+  etaCal.ms+=dtMs*rate; // normalizza a velocità 1×
+  if(etaCal.ms>12000){  // dopo ~12 s di ascolto la misura è affidabile
+    const mis=etaCal.chars/(etaCal.ms/1000);
+    if(mis>4&&mis<40){cps1=cps1*0.5+mis*0.5; saveSettings();}
+    etaCal={chars:Math.round(etaCal.chars/2),ms:Math.round(etaCal.ms/2)}; // finestra scorrevole
+  }
+}
+function etaAggiorna(){
+  if(!sents.length||idx>=sents.length-1){etaLbl.textContent="";return;}
+  const sec=etaResto[idx]/(cps1*rate);
+  let t;
+  if(sec<60)t="meno di 1 min";
+  else{
+    const m=Math.round(sec/60);
+    t=m<60?("≈ "+m+" min"):("≈ "+Math.floor(m/60)+" h "+String(m%60).padStart(2,"0")+" min");
+  }
+  etaLbl.textContent="⏳ "+t;
 }
 
 async function openBook(b,{announce}={announce:true}){
@@ -898,6 +931,10 @@ function setIndex(i,opts){
   pctLbl.textContent=Math.round(frac*100)+"%";
   const s=sents[idx];
   pageLbl.textContent=s&&s.page?("Pag. "+s.page+(book.numPages?" di "+book.numPages:"")):("Frase "+(idx+1)+" di "+sents.length);
+  const ora=Date.now(); // frase completata in lettura → misura la velocità reale della voce
+  if(playing&&setIndex._last===i-1&&setIndex._lastT)etaCalibra(sents[i-1]&&sents[i-1].t,ora-setIndex._lastT);
+  setIndex._last=i; setIndex._lastT=ora;
+  etaAggiorna();
   try{localStorage.setItem("lettore:pos:"+book.key,String(idx));}catch(e){}
   /* da fermo, comunica al motore nativo lo spostamento manuale del segnalibro
      (mentre legge ci pensa speak→salta; gli echi degli eventi "pos" sono innocui) */
