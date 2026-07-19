@@ -32,6 +32,8 @@
   }
   *{box-sizing:border-box}
   html,body{margin:0;padding:0}
+  /* niente alone azzurro del WebView Android sui tocchi */
+  button,select,[role="button"],[role="slider"]{-webkit-tap-highlight-color:transparent;touch-action:manipulation}
   body{
     background:var(--paper); color:var(--ink);
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
@@ -176,7 +178,8 @@
     box-shadow:0 1px 4px rgba(0,0,0,.3);
   }
   .meta{display:flex; justify-content:space-between; font-size:.78rem; color:var(--muted); font-variant-numeric:tabular-nums; margin-top:-6px}
-  .ctrls{display:flex; align-items:center; justify-content:center; gap:26px}
+  .ctrls{display:flex; align-items:center; justify-content:center; gap:22px}
+  #stopBtn{color:var(--muted)}
   .ctrls button{
     border:none; background:none; color:var(--ink); cursor:pointer; padding:8px;
     display:flex; align-items:center; justify-content:center; border-radius:50%;
@@ -214,7 +217,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.12</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.13</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -269,6 +272,9 @@
       </button>
       <button id="nextBtn" type="button" aria-label="Frase successiva">
         <svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14L14.5 12z"></path></svg>
+      </button>
+      <button id="stopBtn" type="button" aria-label="Chiudi la lettura">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6.5 6.5h11v11h-11z"></path></svg>
       </button>
     </div>
     <div class="opts">
@@ -983,6 +989,7 @@ function pageSub(){
 }
 function setPlaying(on){
   playing=on; updatePlayBtn();
+  setPlaying._quando=Date.now(); // le risposte di stato più vecchie di questo tocco non contano
   if(CAP){ /* nell'APK legge il servizio nativo: al play gli consegniamo tutto il
               libro, così continua anche se Android congela il WebView. */
     try{
@@ -1123,6 +1130,9 @@ document.addEventListener("visibilitychange",()=>{
   if(CAP){ // nell'APK legge il nativo: al ritorno riallinea posizione e stato
     if(document.visibilityState==="visible"&&book){
       try{CAP.LetturaService.getPos().then(p=>{
+        /* risposta arrivata DOPO un tocco dell'utente: è già vecchia, non
+           sovrascrivere l'icona appena impostata (il nativo confermerà da sé) */
+        if(Date.now()-(setPlaying._quando||0)<2500)return;
         if(p&&p.chiave===book.key&&typeof p.i==="number"&&p.i>=0&&p.i<sents.length){
           setIndex(p.i,{scroll:true});
           playing=!!p.playing; updatePlayBtn();
@@ -1152,6 +1162,16 @@ setInterval(()=>{
 playBtn.addEventListener("click",()=>{
   if(playing){setPlaying(false);stopSpeech();}
   else{setPlaying(true);speak(idx);}
+});
+/* ⏹ chiude la lettura del tutto: nell'APK spegne anche servizio e notifica */
+$("stopBtn").addEventListener("click",()=>{
+  setPlaying(false); stopSpeech();
+  if(CAP){
+    try{CAP.LetturaService.stop().catch(()=>{});}catch(e){}
+    setPlaying._srv=false; // il servizio è chiuso: il prossimo ▶ lo fa ripartire con play()
+  }
+  const s=sents[idx];
+  toast("Lettura chiusa: riprenderai da "+(s&&s.page?("pagina "+s.page):("qui ("+(sents.length>1?Math.round(idx/(sents.length-1)*100):0)+"%)"))+".");
 });
 /* il titolo in alto riporta alla schermata iniziale; da lì si torna al libro */
 document.querySelector(".wordmark").addEventListener("click",()=>{

@@ -183,6 +183,9 @@ public class ReadingService extends Service {
                 @Override public void onStop() { main.post(ReadingService.this::fermaTutto); }
                 @Override public void onSkipToNext() { main.post(() -> spostati(1)); }
                 @Override public void onSkipToPrevious() { main.post(() -> spostati(-1)); }
+                @Override public void onCustomAction(String action, android.os.Bundle extras) {
+                    if ("CHIUDI".equals(action)) main.post(ReadingService.this::fermaTutto);
+                }
             });
             session.setActive(true);
         } catch (Throwable t) {
@@ -254,6 +257,7 @@ public class ReadingService extends Service {
                 salva();
                 if (ttsPronto) parla();
                 else initTts();
+                LetturaServicePlugin.emit("stato", pos, true); // conferma subito l'icona ⏸ nel JS
             }
         } catch (Throwable ignored) { }
         refresh();
@@ -459,6 +463,10 @@ public class ReadingService extends Service {
                     .setActions(PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE
                         | PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_STOP
                         | PlaybackStateCompat.ACTION_SKIP_TO_NEXT | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
+                    /* su Android 13+ il mini-lettore mostra SOLO le azioni della sessione:
+                       "Chiudi" deve stare qui, quello della notifica viene ignorato */
+                    .addCustomAction(new PlaybackStateCompat.CustomAction.Builder(
+                        "CHIUDI", "Chiudi", R.drawable.ic_chiudi).build())
                     .setState(playing ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED,
                         PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, playing ? 1f : 0f)
                     .build());
