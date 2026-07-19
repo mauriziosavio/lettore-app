@@ -80,8 +80,18 @@
     padding:20px 20px calc(210px + env(safe-area-inset-bottom));
   }
 
-  /* ---------- landing ---------- */
-  #landing{padding-top:6vh; text-align:left}
+  /* ---------- landing ----------
+     Landing e "sto aprendo" sono VELI sovrapposti al libro: il testo non viene
+     mai smontato, così tornare alla lettura è istantaneo anche con libri enormi
+     (nascondere/rimostrare migliaia di paragrafi costava secondi di layout). */
+  #landing,#busy{
+    position:fixed; inset:0; z-index:4; display:none; overflow:auto;
+    background:var(--paper);
+    padding:calc(72px + max(env(safe-area-inset-top,0px),var(--sat,0px))) 20px 48px;
+    -webkit-overflow-scrolling:touch;
+  }
+  .ovwrap{max-width:42rem;margin:0 auto}
+  #landing{text-align:left}
   #landing h1{
     font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
     font-size:clamp(1.9rem,6vw,2.6rem); line-height:1.15; margin:0 0 14px; text-wrap:balance;
@@ -130,7 +140,7 @@
   .rec .rdel:focus-visible,.rec:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
 
   /* ---------- busy ---------- */
-  #busy{display:none; padding-top:10vh; text-align:center}
+  #busy{text-align:center; padding-top:20vh}
   #busy .spin{
     width:34px;height:34px;margin:0 auto 16px;border-radius:50%;
     border:3px solid var(--line); border-top-color:var(--accent);
@@ -274,13 +284,13 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.16</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.17</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
 
 <main>
-  <section id="landing">
+  <section id="landing"><div class="ovwrap">
     <button id="resumeBtn" type="button" style="display:none;background:var(--accent);color:var(--accent-ink);border:0;border-radius:12px;padding:12px 18px;font-size:1rem;font-weight:600;margin:0 0 22px;cursor:pointer">↩ Torna alla lettura</button>
     <h1>Il tuo libro,<br>letto <em>ad alta voce</em>.</h1>
     <p class="lead">Apri un PDF o un documento Word e Lettore lo trasforma in un audiolibro in italiano: legge frase per frase seguendo la punteggiatura, e riparte sempre da dove eri rimasto.</p>
@@ -304,12 +314,12 @@
       <li><b>Voce e ritmo tuoi.</b>&nbsp;Scegli la voce italiana del dispositivo e regola la velocità; tocca una frase per partire da lì.</li>
     </ul>
     <p id="apkHint" style="margin:26px 0 0;font-size:.92rem"><a style="color:var(--accent)" href="https://mauriziosavio.github.io/lettore/scarica.html">📲 Su Android c'è anche l'app: legge pure a schermo spento — scaricala qui</a></p>
-  </section>
+  </div></section>
 
-  <section id="busy">
+  <section id="busy"><div class="ovwrap" style="text-align:center">
     <div class="spin" aria-hidden="true"></div>
     <div id="busyMsg" role="status">Sto aprendo il file…</div>
-  </section>
+  </div></section>
 
   <article id="reader" lang="it"></article>
 </main>
@@ -961,7 +971,8 @@ async function renderStats(){
 function showState(which){
   landing.style.display=which==="landing"?"block":"none";
   busy.style.display=which==="busy"?"block":"none";
-  reader.style.display=which==="reader"?"block":"none";
+  /* il libro, una volta impaginato, resta montato: i veli gli passano sopra */
+  if(which==="reader")reader.style.display="block";
   player.style.display=which==="reader"?"block":"none";
 }
 function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
@@ -1015,6 +1026,7 @@ function renderBook(){
   });
   reader.innerHTML=html.join("");
   spans=Array.from(reader.querySelectorAll("span.s"));
+  setIndex._letto=0; setIndex._last=-1; setIndex._lastT=0; karaoke.i=-1; karaoke.cleanI=-1;
   bookTitle.textContent=book.name;
   etaResto=new Array(sents.length+1); etaResto[sents.length]=0;
   for(let i=sents.length-1;i>=0;i--)etaResto[i]=etaResto[i+1]+sents[i].t.length;
@@ -1109,7 +1121,11 @@ function setIndex(i,opts){
   const sp=spans[idx];
   if(sp){
     sp.classList.add("cur");
-    spans.forEach((s,j)=>s.classList.toggle("read",j<idx));
+    /* marcatura "già letto" INCREMENTALE: toccare tutte le frasi a ogni passo
+       (spans.forEach) su un libro grande bloccava l'interfaccia per secondi */
+    if(idx>setIndex._letto){for(let j=setIndex._letto;j<idx;j++)if(spans[j])spans[j].classList.add("read");}
+    else if(idx<setIndex._letto){for(let j=idx;j<setIndex._letto;j++)if(spans[j])spans[j].classList.remove("read");}
+    setIndex._letto=idx;
     if(opts&&opts.scroll)centraFrase(sp); // salto esplicito: subito, con verifica
     else if(Date.now()-userScrolledAt>5000)sp.scrollIntoView({block:"center",behavior:"smooth"});
   }
@@ -1532,7 +1548,7 @@ document.querySelector(".wordmark").addEventListener("click",()=>{
     renderRecenti(); // percentuali aggiornate a dove sei arrivato
     renderStats();
     showState("landing");
-    window.scrollTo(0,0);
+    landing.scrollTop=0; // il velo ha il suo scorrimento: il libro non si muove
   }
 });
 $("resumeBtn").addEventListener("click",()=>{
