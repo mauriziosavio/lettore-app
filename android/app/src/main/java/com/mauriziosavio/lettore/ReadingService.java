@@ -82,6 +82,8 @@ public class ReadingService extends Service {
     private long guardiaScade = 0; // cane da guardia: entro quando deve arrivare onDone/onError
     private final Runnable guardia = this::controllaGuardia;
     private long statInizio = 0;   // statistiche: da quando sta leggendo questa sessione
+    private long parlaInizio = 0;  // quando è partita la frase corrente (smaschera gli onDone senza audio)
+    private int frasiLampo = 0;    // frasi "finite" troppo in fretta di fila (voce in rete assente)
 
     /* ============ API statiche usate dal plugin (stesso processo) ============ */
 
@@ -269,6 +271,7 @@ public class ReadingService extends Service {
             if (nuova) {
                 gen++;
                 errori = 0;
+                frasiLampo = 0;
                 playing = true;
                 statParte();
                 salva();
@@ -293,9 +296,24 @@ public class ReadingService extends Service {
                 main.postDelayed(() -> { if (playing && g == gen) parla(); }, 800);
                 return;
             }
+            parlaInizio = SystemClock.elapsedRealtime();
             armaGuardia(frase.length());
             if (pagineCorrente() != ultimaPagina) refresh();
         } catch (Throwable ignored) { }
+    }
+
+    /** Le voci "in rete" senza connessione dicono subito onDone SENZA audio:
+     *  se la frase "finisce" più in fretta di quanto qualunque voce potrebbe
+     *  pronunciarla, è un finto successo. */
+    private boolean finintaTroppoInFretta() {
+        try {
+            if (frasi == null || pos < 0 || pos >= frasi.size()) return false;
+            int len = frasi.get(pos).length();
+            if (len <= 15) return false; // le frasi cortissime possono finire davvero in fretta
+            long durata = SystemClock.elapsedRealtime() - parlaInizio;
+            long minimo = Math.max(350, (long) (len * 25 / Math.max(0.5f, rate)));
+            return durata < minimo;
+        } catch (Throwable ignored) { return false; }
     }
 
     /* Cane da guardia: se onDone/onError non arrivano entro il tempo stimato
@@ -333,6 +351,21 @@ public class ReadingService extends Service {
                 main.postDelayed(() -> { if (playing && g == gen) parla(); }, errori < 3 ? 700 : 5000);
                 return;
             }
+            if (finintaTroppoInFretta()) {
+                frasiLampo++;
+                if (frasiLampo >= 3) {
+                    /* la voce scelta non produce audio (tipico: voce in rete senza
+                       connessione): torna alla voce di sistema e avvisa il JS */
+                    frasiLampo = 0;
+                    try { getSharedPreferences("lettura", MODE_PRIVATE).edit().remove("voce").apply(); } catch (Throwable ignored) { }
+                    try { if (tts != null) tts.setLanguage(Locale.ITALIAN); } catch (Throwable ignored) { }
+                    LetturaServicePlugin.emit("voceko", pos, playing);
+                }
+                final int g = gen;
+                main.postDelayed(() -> { if (playing && g == gen) parla(); }, 900);
+                return;
+            }
+            frasiLampo = 0;
             errori = 0;
             if (pos + 1 >= frasi.size()) {
                 playing = false;
@@ -418,6 +451,7 @@ public class ReadingService extends Service {
 
     /** Cambio voce a caldo: se sta leggendo, la frase corrente riparte con la nuova voce. */
     private void applicaVoceScelta() {
+        frasiLampo = 0; // nuova voce, nuova fiducia
         applicaVoce();
         try { if (playing && ttsPronto) salta(-1, 0, true); } catch (Throwable ignored) { }
     }

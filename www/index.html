@@ -284,7 +284,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.17</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.18</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -602,6 +602,15 @@ if(CAP){ /* nell'APK le voci sono quelle del TTS di Android: le chiediamo al plu
         if(book&&d.i>=0&&d.i<sents.length)setIndex(d.i);
       }else if(d.azione==="parola"&&typeof d.i==="number"){
         if(book&&d.i>=0&&d.i<sents.length&&playing)evidenziaParola(d.i,d.da||0);
+      }else if(d.azione==="voceko"){
+        /* la voce scelta non produce audio (in rete senza connessione?):
+           il nativo è già tornato alla voce di sistema */
+        voiceName=null; saveSettings();
+        try{
+          const p=[...voiceSel.options].find(o=>/predefinita/.test(o.textContent));
+          if(p)voiceSel.value=p.value;
+        }catch(e){}
+        toast("Questa voce non riesce a leggere (forse le serve internet): torno alla voce di sistema.",6500);
       }else if(d.azione==="stato"){
         playing=!!d.playing; updatePlayBtn();
         if(!playing)ripristinaParola();
