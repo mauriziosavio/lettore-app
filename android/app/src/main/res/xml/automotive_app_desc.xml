@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dice ad Android Auto che questa è un'app multimediale (audio) -->
+<automotiveApp>
+    <uses name="media" />
+</automotiveApp>

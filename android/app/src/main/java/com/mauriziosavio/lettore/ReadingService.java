@@ -4,7 +4,6 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
-import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -20,12 +19,16 @@ import android.os.PowerManager;
 import android.os.SystemClock;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
+import android.support.v4.media.MediaBrowserCompat;
+import android.support.v4.media.MediaDescriptionCompat;
 import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
 
 import androidx.core.app.NotificationCompat;
+import androidx.media.MediaBrowserServiceCompat;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
@@ -35,10 +38,17 @@ import java.util.Locale;
  * lettura continua anche quando il sistema congela il WebView in background
  * (succedeva dopo ~1 minuto). Il WebView si risincronizza con gli eventi "pos"
  * e con getPos() quando torna visibile. Tutto è difensivo: mai far cadere l'app.
+ *
+ * È anche un MediaBrowserService: Android Auto vi si collega, mostra il libro
+ * corrente ("Riprendi …") e comanda la lettura via MediaSession. Perché funzioni
+ * anche ad app spenta, il libro consegnato dal JS viene persistito in libro.json
+ * e ricaricato da riprendi() al primo play a freddo.
  */
-public class ReadingService extends Service {
+public class ReadingService extends MediaBrowserServiceCompat {
     private static final String CHANNEL_ID = "lettura";
     private static final int NOTIFICATION_ID = 1;
+    private static final String RADICE = "radice";
+    private static final String LIBRO_FILE = "libro.json";
     static final String AZ_PLAY = "com.mauriziosavio.lettore.PLAY";
     static final String AZ_PAUSE = "com.mauriziosavio.lettore.PAUSE";
     static final String AZ_NEXT = "com.mauriziosavio.lettore.NEXT";
@@ -188,16 +198,23 @@ public class ReadingService extends Service {
         try {
             session = new MediaSessionCompat(this, "lettore");
             session.setCallback(new MediaSessionCompat.Callback() {
-                @Override public void onPlay() { main.post(() -> salta(-1, 0, true)); }
+                @Override public void onPlay() { main.post(ReadingService.this::riprendi); }
                 @Override public void onPause() { main.post(ReadingService.this::pausa); }
                 @Override public void onStop() { main.post(ReadingService.this::fermaTutto); }
                 @Override public void onSkipToNext() { main.post(() -> spostati(1)); }
                 @Override public void onSkipToPrevious() { main.post(() -> spostati(-1)); }
+                @Override public void onPlayFromMediaId(String mediaId, android.os.Bundle extras) {
+                    main.post(ReadingService.this::riprendi); // unico contenuto: il libro corrente
+                }
+                @Override public void onPlayFromSearch(String query, android.os.Bundle extras) {
+                    main.post(ReadingService.this::riprendi); // "Ehi Google, riprendi la lettura"
+                }
                 @Override public void onCustomAction(String action, android.os.Bundle extras) {
                     if ("CHIUDI".equals(action)) main.post(ReadingService.this::fermaTutto);
                 }
             });
             session.setActive(true);
+            setSessionToken(session.getSessionToken()); // Android Auto trova i comandi da qui
         } catch (Throwable t) {
             session = null; // senza sessione niente mini-lettore, ma l'app vive
         }
@@ -213,7 +230,7 @@ public class ReadingService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         try {
             String az = intent != null ? intent.getAction() : null;
-            if (AZ_PLAY.equals(az)) { salta(-1, 0, true); return START_NOT_STICKY; }
+            if (AZ_PLAY.equals(az)) { riprendi(); return START_NOT_STICKY; }
             if (AZ_PAUSE.equals(az)) { pausa(); return START_NOT_STICKY; }
             if (AZ_NEXT.equals(az)) { spostati(1); return START_NOT_STICKY; }
             if (AZ_PREV.equals(az)) { spostati(-1); return START_NOT_STICKY; }
@@ -275,6 +292,7 @@ public class ReadingService extends Service {
                 playing = true;
                 statParte();
                 salva();
+                salvaLibroSuDisco(frasi, pagine, pause, rate, title, numPages, chiave);
                 if (ttsPronto) parla();
                 else initTts();
                 LetturaServicePlugin.emit("stato", pos, true); // conferma subito l'icona ⏸ nel JS
@@ -435,6 +453,117 @@ public class ReadingService extends Service {
         } catch (Throwable ignored) { }
     }
 
+    /* ---- ripresa a freddo (Android Auto / notifica con app spenta) ---- */
+
+    /** Play senza libro in memoria: se il JS non l'ha ancora consegnato,
+     *  lo ricarica da libro.json e riparte dal segnalibro salvato. */
+    private void riprendi() {
+        try { // da bound (Auto) a servizio avviato: sopravvive quando Auto si scollega
+            Intent i = new Intent(this, ReadingService.class);
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(i);
+            else startService(i);
+        } catch (Throwable ignored) { }
+        if (frasi != null) { salta(-1, 0, true); return; }
+        new Thread(() -> {
+            try {
+                java.io.File f = new java.io.File(getFilesDir(), LIBRO_FILE);
+                if (!f.exists()) return;
+                byte[] b = new byte[(int) f.length()];
+                try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
+                    int off = 0, n;
+                    while (off < b.length && (n = in.read(b, off, b.length - off)) > 0) off += n;
+                }
+                org.json.JSONObject o = new org.json.JSONObject(
+                    new String(b, java.nio.charset.StandardCharsets.UTF_8));
+                org.json.JSONArray fr = o.getJSONArray("frasi");
+                final List<String> nf = new ArrayList<>(fr.length());
+                for (int i = 0; i < fr.length(); i++) nf.add(fr.getString(i));
+                if (nf.isEmpty()) return;
+                org.json.JSONArray jpg = o.optJSONArray("pagine");
+                final int[] np = new int[jpg != null ? jpg.length() : 0];
+                for (int i = 0; i < np.length; i++) np[i] = jpg.getInt(i);
+                org.json.JSONArray jpa = o.optJSONArray("pause");
+                final int[] nu = new int[jpa != null ? jpa.length() : 0];
+                for (int i = 0; i < nu.length; i++) nu[i] = jpa.getInt(i);
+                final float r = (float) o.optDouble("rate", 1.0);
+                final String t = o.optString("titolo", "Lettore");
+                final int npg = o.optInt("numPages", 0);
+                final String ch = o.optString("chiave", "");
+                main.post(() -> {
+                    if (frasi != null) { salta(-1, 0, true); return; } // nel frattempo è arrivato dal JS
+                    frasi = nf; pagine = np; pause = nu; rate = r;
+                    title = t; numPages = npg; chiave = ch;
+                    int p = 0;
+                    try { p = getSharedPreferences("lettura", MODE_PRIVATE).getInt("pos", 0); } catch (Throwable ignored) { }
+                    pos = Math.max(0, Math.min(nf.size() - 1, p));
+                    salta(-1, 0, true);
+                });
+            } catch (Throwable ignored) { }
+        }).start();
+    }
+
+    /** Persiste l'intero libro (in un thread, sono anche megabyte) così la
+     *  lettura può ripartire da Auto o dalla notifica ad app spenta. */
+    private void salvaLibroSuDisco(final List<String> f, final int[] pg, final int[] pa,
+                                   final float r, final String t, final int np, final String ch) {
+        new Thread(() -> {
+            try {
+                org.json.JSONObject o = new org.json.JSONObject();
+                org.json.JSONArray af = new org.json.JSONArray();
+                if (f != null) for (String s : f) af.put(s);
+                org.json.JSONArray apg = new org.json.JSONArray();
+                if (pg != null) for (int x : pg) apg.put(x);
+                org.json.JSONArray apa = new org.json.JSONArray();
+                if (pa != null) for (int x : pa) apa.put(x);
+                o.put("frasi", af); o.put("pagine", apg); o.put("pause", apa);
+                o.put("rate", r); o.put("titolo", t); o.put("numPages", np); o.put("chiave", ch);
+                java.io.File tmp = new java.io.File(getFilesDir(), LIBRO_FILE + ".tmp");
+                try (java.io.FileOutputStream out = new java.io.FileOutputStream(tmp)) {
+                    out.write(o.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                }
+                tmp.renameTo(new java.io.File(getFilesDir(), LIBRO_FILE));
+                try { notifyChildrenChanged(RADICE); } catch (Throwable ignored) { }
+            } catch (Throwable ignored) { }
+        }).start();
+    }
+
+    /* ---- catalogo per Android Auto (MediaBrowserService) ---- */
+
+    @Override
+    public BrowserRoot onGetRoot(String clientPackageName, int clientUid, android.os.Bundle rootHints) {
+        return new BrowserRoot(RADICE, null); // nessun contenuto sensibile: catalogo aperto
+    }
+
+    @Override
+    public void onLoadChildren(String parentId, Result<List<MediaBrowserCompat.MediaItem>> result) {
+        List<MediaBrowserCompat.MediaItem> items = new ArrayList<>();
+        try {
+            String t = title;
+            int pg, np = numPages;
+            SharedPreferences p = getSharedPreferences("lettura", MODE_PRIVATE);
+            if (frasi != null) {
+                pg = pagineCorrente();
+            } else { // servizio appena nato (bind di Auto): dati dal segnalibro persistente
+                t = p.getString("titolo", "");
+                np = p.getInt("numPages", 0);
+                pg = p.getInt("pagina", 0);
+            }
+            boolean c = frasi != null || new java.io.File(getFilesDir(), LIBRO_FILE).exists();
+            if (c && t != null && !t.isEmpty()) {
+                String sotto = pg > 0
+                    ? "Riprendi da pagina " + pg + (np > 0 ? " di " + np : "")
+                    : "Riprendi la lettura";
+                MediaDescriptionCompat d = new MediaDescriptionCompat.Builder()
+                    .setMediaId("riprendi")
+                    .setTitle(t)
+                    .setSubtitle(sotto)
+                    .build();
+                items.add(new MediaBrowserCompat.MediaItem(d, MediaBrowserCompat.MediaItem.FLAG_PLAYABLE));
+            }
+        } catch (Throwable ignored) { }
+        result.sendResult(items);
+    }
+
     /* ---- voce ---- */
 
     /** Applica la voce salvata nelle preferenze al motore TTS (silenziosamente). */
@@ -490,6 +619,10 @@ public class ReadingService extends Service {
                 .putInt("pos", pos)
                 .putString("chiave", chiave)
                 .putBoolean("playing", playing)
+                // per il catalogo di Android Auto quando il servizio è spento
+                .putString("titolo", title)
+                .putInt("numPages", numPages)
+                .putInt("pagina", pagineCorrente())
                 .apply();
         } catch (Throwable ignored) { }
     }
@@ -544,7 +677,9 @@ public class ReadingService extends Service {
                 session.setPlaybackState(new PlaybackStateCompat.Builder()
                     .setActions(PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE
                         | PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_STOP
-                        | PlaybackStateCompat.ACTION_SKIP_TO_NEXT | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
+                        | PlaybackStateCompat.ACTION_SKIP_TO_NEXT | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
+                        | PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID
+                        | PlaybackStateCompat.ACTION_PLAY_FROM_SEARCH)
                     /* su Android 13+ il mini-lettore mostra SOLO le azioni della sessione:
                        "Chiudi" deve stare qui, quello della notifica viene ignorato */
                     .addCustomAction(new PlaybackStateCompat.CustomAction.Builder(
@@ -658,6 +793,7 @@ public class ReadingService extends Service {
 
     @Override
     public IBinder onBind(Intent intent) {
-        return null;
+        // Android Auto si collega da qui (MediaBrowserServiceCompat gestisce tutto)
+        return super.onBind(intent);
     }
 }
