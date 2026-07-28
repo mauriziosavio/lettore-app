@@ -125,13 +125,23 @@ public class LetturaServicePlugin extends Plugin {
                     }
                 }
             } catch (Throwable ignored) { }
+            // copertina (dataURL base64): diventa album art su Auto e notifica
+            byte[] copertina = null;
+            try {
+                String cop = call.getString("copertina", "");
+                if (cop != null && cop.startsWith("data:image")) {
+                    int virgola = cop.indexOf(',');
+                    if (virgola > 0) copertina = android.util.Base64.decode(
+                        cop.substring(virgola + 1), android.util.Base64.DEFAULT);
+                }
+            } catch (Throwable ignored) { }
             ReadingService.caricaCoda(getContext(), frasi, pagine, pause,
                 call.getInt("da", 0),
                 call.getDouble("rate", 1.0).floatValue(),
                 call.getString("titolo", "Lettore"),
                 call.getInt("numPages", 0),
                 call.getString("chiave", ""),
-                capT, capI, capP);
+                capT, capI, capP, copertina);
         } catch (Throwable ignored) { }
         call.resolve();
     }

@@ -116,26 +116,50 @@
   .facts li::before{content:""; flex:none; width:7px; height:7px; border-radius:2px; background:var(--accent); transform:translateY(-1px)}
   .facts b{color:var(--ink); font-weight:600}
 
-  /* ---------- letti di recente ---------- */
-  #recenti{margin:28px 0 0; display:none}
+  /* ---------- la tua libreria (scaffale con copertine in 3D) ---------- */
+  #recenti{margin:30px 0 0; display:none}
   #recenti h2{
     font-size:.74rem; letter-spacing:.13em; text-transform:uppercase;
-    color:var(--muted); margin:0 0 10px; font-weight:600;
+    color:var(--muted); margin:0 0 16px; font-weight:600;
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
   }
-  .rec{
-    display:flex; align-items:center; gap:10px;
-    border:1px solid var(--line); background:var(--paper-2); border-radius:12px;
-    padding:11px 8px 11px 14px; margin:0 0 8px; cursor:pointer;
-    -webkit-tap-highlight-color:transparent;
+  #recList{display:grid; grid-template-columns:repeat(auto-fill,minmax(112px,1fr)); gap:26px 18px}
+  .rec{position:relative; cursor:pointer; -webkit-tap-highlight-color:transparent}
+  .rec .rsc{perspective:1000px; padding:6px 8px 0 2px}
+  .rec .rlibro{
+    position:relative; aspect-ratio:2/3; transform-style:preserve-3d;
+    transform:rotateY(24deg); border-radius:3px 8px 8px 3px;
+    transition:transform .45s cubic-bezier(.2,.7,.3,1);
+    filter:drop-shadow(-9px 12px 10px rgba(0,0,0,.30));
   }
-  .rec:active{transform:scale(.99)}
-  .rec .rbody{flex:1; min-width:0}
-  .rec .rtit{font-weight:600; font-size:.95rem; line-height:1.35; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
-  .rec .rsub{font-size:.78rem; color:var(--muted); margin-top:2px; font-variant-numeric:tabular-nums}
+  .rec:hover .rlibro,.rec:focus-visible .rlibro{transform:rotateY(10deg) translateY(-4px)}
+  @media (prefers-reduced-motion:reduce){.rec .rlibro{transition:none}}
+  .rec .rlibro img{
+    position:absolute; inset:0; width:100%; height:100%; object-fit:cover;
+    border-radius:inherit; backface-visibility:hidden;
+    /* piega del dorso a sinistra + filo di luce sul bordo */
+    box-shadow:inset 5px 0 9px rgba(0,0,0,.24), inset 12px 0 2px -10px rgba(255,255,255,.4),
+               inset -1px 0 1px rgba(255,255,255,.35);
+  }
+  .rec .rpag{ /* il taglio delle pagine: la faccia destra del volume */
+    position:absolute; top:1.2%; right:0; width:14px; height:97.6%;
+    transform-origin:100% 50%; transform:rotateY(-90deg);
+    background:repeating-linear-gradient(to bottom,#f7f3e9 0 2px,#ddd7c7 2px 3px);
+    border-radius:0 2px 2px 0;
+  }
+  .rec .rtit{
+    margin:12px 2px 0; font-weight:600; font-size:.82rem; line-height:1.3;
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+  }
+  .rec .rsub{font-size:.72rem; color:var(--muted); margin:3px 2px 0; font-variant-numeric:tabular-nums}
+  .rec .rbar{height:3px; border-radius:2px; margin:7px 2px 0; overflow:hidden;
+    background:color-mix(in srgb, var(--line) 60%, transparent)}
+  .rec .rbar i{display:block; height:100%; background:var(--accent); border-radius:2px}
   .rec .rdel{
-    flex:none; border:none; background:none; color:var(--muted); cursor:pointer;
-    font-size:1rem; line-height:1; padding:10px; border-radius:50%;
+    position:absolute; top:-6px; right:-2px; z-index:2; width:27px; height:27px;
+    border:1px solid var(--line); background:var(--paper); color:var(--muted);
+    border-radius:50%; cursor:pointer; font-size:.8rem; line-height:1; padding:0;
+    box-shadow:0 2px 6px rgba(0,0,0,.2);
   }
   .rec .rdel:focus-visible,.rec:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
 
@@ -314,7 +338,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.21</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.22</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -323,7 +347,7 @@
   <section id="landing"><div class="ovwrap">
     <button id="resumeBtn" type="button" style="display:none;background:var(--accent);color:var(--accent-ink);border:0;border-radius:12px;padding:12px 18px;font-size:1rem;font-weight:600;margin:0 0 22px;cursor:pointer">↩ Torna alla lettura</button>
     <h1>Il tuo libro,<br>letto <em>ad alta voce</em>.</h1>
-    <p class="lead">Apri un PDF o un documento Word e Lettore lo trasforma in un audiolibro in italiano: legge frase per frase seguendo la punteggiatura, e riparte sempre da dove eri rimasto.</p>
+    <p class="lead">Apri un PDF, un EPUB o un documento Word e Lettore lo trasforma in un audiolibro in italiano: legge frase per frase seguendo la punteggiatura, e riparte sempre da dove eri rimasto.</p>
     <div id="dropZone" role="button" tabindex="0" aria-label="Apri un file PDF o DOCX">
       <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
@@ -331,10 +355,10 @@
         <path d="M9 8h6M9 11.5h6"></path>
       </svg>
       <p class="big">Tocca per scegliere un file</p>
-      <p class="fmt">PDF · DOCX · TXT — anche libri di centinaia di pagine</p>
+      <p class="fmt">PDF · EPUB · DOCX · FB2 · TXT — anche libri di centinaia di pagine</p>
     </div>
     <div id="recenti">
-      <h2>Letti di recente</h2>
+      <h2>La tua libreria</h2>
       <div id="recList"></div>
     </div>
     <p id="statLine" style="display:none;margin:18px 0 0;font-size:.88rem;color:var(--muted)"></p>
@@ -450,7 +474,7 @@
 </div>
 
 <div id="toast" role="status"></div>
-<input type="file" id="fileInput" accept=".pdf,.docx,.doc,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" hidden>
+<input type="file" id="fileInput" accept=".pdf,.docx,.doc,.txt,.epub,.fb2,application/pdf,application/epub+zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" hidden>
 
 <script>/**
  * @licstart The following is the entire license notice for the
@@ -866,7 +890,19 @@ async function extractPdf(data,onProg){
     if(cur&&(curHead||/[.!?…:]["»”')\]]*$/.test(cur)))flush();
   }
   flush();
-  return {pars,numPages:pdf.numPages};
+  /* la prima pagina come copertina — ma se è solo testo su bianco, meglio
+     lasciar fare alla copertina disegnata dall'app */
+  let cover=null;
+  try{
+    const p1=await pdf.getPage(1);
+    const vp=p1.getViewport({scale:COP_W/p1.getViewport({scale:1}).width});
+    const c=document.createElement("canvas");
+    c.width=Math.round(vp.width); c.height=Math.round(vp.height);
+    await p1.render({canvasContext:c.getContext("2d"),viewport:vp}).promise;
+    if(canvasSembraCopertina(c))cover=c.toDataURL("image/jpeg",.85);
+    if(p1.cleanup)p1.cleanup();
+  }catch(e){}
+  return {pars,numPages:pdf.numPages,cover};
 }
 async function extractDocx(arrayBuffer){
   const res=await mammoth.extractRawText({arrayBuffer});
@@ -876,6 +912,300 @@ async function extractDocx(arrayBuffer){
 function extractTxt(text){
   const pars=text.split(/\r?\n\s*\r?\n|\r?\n/).map(s=>s.trim()).filter(Boolean).map(t=>({text:t,page:null}));
   return {pars,numPages:null};
+}
+
+/* ============================== ZIP minimale (per EPUB e FB2.zip) ============================== */
+/* Un EPUB è uno ZIP di pagine XHTML: si apre senza librerie esterne leggendo
+   la directory centrale e scomprimendo col DecompressionStream di Chrome. */
+async function unzipTutto(buf){
+  const u8=new Uint8Array(buf), dv=new DataView(buf);
+  let eocd=-1;
+  for(let i=u8.length-22;i>=Math.max(0,u8.length-22-65557);i--){
+    if(dv.getUint32(i,true)===0x06054b50){eocd=i;break;}
+  }
+  if(eocd<0)throw new Error("archivio ZIP non valido");
+  const n=dv.getUint16(eocd+10,true);
+  let off=dv.getUint32(eocd+16,true);
+  const dec=new TextDecoder();
+  const voci=new Map();
+  for(let k=0;k<n;k++){
+    if(dv.getUint32(off,true)!==0x02014b50)break;
+    const metodo=dv.getUint16(off+10,true);
+    const cSize=dv.getUint32(off+20,true);
+    const nomeLen=dv.getUint16(off+28,true);
+    const extraLen=dv.getUint16(off+30,true);
+    const commLen=dv.getUint16(off+32,true);
+    const lho=dv.getUint32(off+42,true);
+    voci.set(dec.decode(u8.subarray(off+46,off+46+nomeLen)),{metodo,cSize,lho});
+    off+=46+nomeLen+extraLen+commLen;
+  }
+  return {u8,dv,voci};
+}
+async function zipFile(z,nome){
+  const v=z.voci.get(nome);
+  if(!v)throw new Error("nell'archivio manca "+nome);
+  const nomeLen=z.dv.getUint16(v.lho+26,true), extraLen=z.dv.getUint16(v.lho+28,true);
+  const da=v.lho+30+nomeLen+extraLen;
+  const dati=z.u8.subarray(da,da+v.cSize);
+  if(v.metodo===0)return dati;
+  if(v.metodo===8){
+    const r=new Response(new Blob([dati]).stream().pipeThrough(new DecompressionStream("deflate-raw")));
+    return new Uint8Array(await r.arrayBuffer());
+  }
+  throw new Error("compressione ZIP non gestita ("+v.metodo+")");
+}
+/* Alcuni FB2 non sono in UTF-8: l'encoding è dichiarato nell'intestazione XML. */
+function decodificaXml(buf){
+  const testa=new TextDecoder().decode(new Uint8Array(buf,0,Math.min(300,buf.byteLength)));
+  const m=/encoding=["']([\w-]+)["']/i.exec(testa);
+  try{return new TextDecoder(m?m[1].toLowerCase():"utf-8").decode(buf);}
+  catch(e){return new TextDecoder().decode(buf);}
+}
+
+/* ============================== EPUB ============================== */
+async function extractEpub(buf,onProg){
+  if(typeof DecompressionStream==="undefined")throw new Error("questo browser non sa aprire gli EPUB (troppo vecchio)");
+  const z=await unzipTutto(buf);
+  const dec=new TextDecoder();
+  const testo=async p=>dec.decode(await zipFile(z,p));
+  const dirDi=p=>p.includes("/")?p.replace(/[^/]+$/,""):"";
+  const risolvi=(dir,h)=>{ // href relativi (anche con ../), senza frammenti
+    const parti=(dir+decodeURIComponent((h||"").split("#")[0])).split("/");
+    const out=[];
+    for(const s of parti){if(s==="..")out.pop();else if(s&&s!==".")out.push(s);}
+    return out.join("/");
+  };
+  const cont=new DOMParser().parseFromString(await testo("META-INF/container.xml"),"application/xml");
+  const rf=cont.getElementsByTagName("rootfile")[0];
+  if(!rf)throw new Error("EPUB senza indice (container.xml)");
+  const opfPath=rf.getAttribute("full-path");
+  const base=dirDi(opfPath);
+  const opf=new DOMParser().parseFromString(await testo(opfPath),"application/xml");
+  let titolo=null;
+  try{
+    const dt=opf.getElementsByTagNameNS("http://purl.org/dc/elements/1.1/","title")[0]
+          ||opf.getElementsByTagName("dc:title")[0];
+    if(dt)titolo=dt.textContent.replace(/\s+/g," ").trim()||null;
+  }catch(e){}
+  const man=new Map(); // id → {href, tipo, props}
+  for(const it of opf.getElementsByTagName("item")){
+    man.set(it.getAttribute("id"),{
+      href:it.getAttribute("href")||"",
+      tipo:it.getAttribute("media-type")||"",
+      props:it.getAttribute("properties")||"",
+    });
+  }
+  const spine=[...opf.getElementsByTagName("itemref")]
+    .map(x=>x.getAttribute("idref")).filter(id=>man.has(id));
+  /* titoli dei capitoli dall'indice del libro (nav EPUB3 oppure toc.ncx EPUB2) */
+  const tocTitoli=new Map();
+  try{
+    let navPath=null,ncxPath=null;
+    man.forEach(v=>{
+      if(!navPath&&v.props.includes("nav"))navPath=risolvi(base,v.href);
+      if(!ncxPath&&v.tipo.includes("dtbncx"))ncxPath=risolvi(base,v.href);
+    });
+    if(navPath){
+      const nd=new DOMParser().parseFromString(await testo(navPath),"text/html");
+      for(const a of nd.querySelectorAll("nav a[href]")){
+        const p=risolvi(dirDi(navPath),a.getAttribute("href"));
+        if(!tocTitoli.has(p))tocTitoli.set(p,a.textContent.replace(/\s+/g," ").trim());
+      }
+    }else if(ncxPath){
+      const nd=new DOMParser().parseFromString(await testo(ncxPath),"application/xml");
+      for(const np of nd.getElementsByTagName("navPoint")){
+        const lab=np.getElementsByTagName("text")[0], src=np.getElementsByTagName("content")[0];
+        if(lab&&src){
+          const p=risolvi(dirDi(ncxPath),src.getAttribute("src"));
+          if(!tocTitoli.has(p))tocTitoli.set(p,lab.textContent.replace(/\s+/g," ").trim());
+        }
+      }
+    }
+  }catch(e){}
+  /* i capitoli, nell'ordine di lettura della spine */
+  const pars=[];
+  for(let ci=0;ci<spine.length;ci++){
+    const item=man.get(spine[ci]);
+    if(!/html|xml/i.test(item.tipo))continue;
+    const percorso=risolvi(base,item.href);
+    let doc;
+    try{doc=new DOMParser().parseFromString(await testo(percorso),"text/html");}
+    catch(e){continue;}
+    const corpo=doc.body||doc.documentElement;
+    if(!corpo)continue;
+    let prima=true;
+    for(const el of corpo.querySelectorAll("p,h1,h2,h3,h4,h5,h6,li,blockquote,td,dt,dd,figcaption,pre,div")){
+      if(el.tagName==="DIV"&&el.querySelector("p,div,h1,h2,h3,h4,h5,h6,li,blockquote"))continue; // solo div foglia
+      const t=(el.textContent||"").replace(/\s+/g," ").trim();
+      if(!t)continue;
+      const head=/^H[1-3]$/.test(el.tagName);
+      if(prima&&!head){ // capitolo senza intestazione: usa il titolo dell'indice
+        const tit=tocTitoli.get(percorso);
+        if(tit&&piatta(tit)!==piatta(t).slice(0,tit.length))pars.push({text:tit,page:null,head:true});
+      }
+      prima=false;
+      pars.push({text:t,page:null,head});
+    }
+    if(onProg)onProg(ci+1,spine.length);
+    if(ci%5===4)await new Promise(r=>setTimeout(r,0));
+  }
+  /* copertina: proprietà cover-image (EPUB3), meta name=cover (EPUB2), o id "cover" */
+  let coverPath=null;
+  man.forEach(v=>{if(!coverPath&&v.props.includes("cover-image"))coverPath=risolvi(base,v.href);});
+  if(!coverPath){
+    for(const m of opf.getElementsByTagName("meta")){
+      if((m.getAttribute("name")||"")==="cover"){
+        const it=man.get(m.getAttribute("content"));
+        if(it&&it.tipo.startsWith("image/"))coverPath=risolvi(base,it.href);
+      }
+    }
+  }
+  if(!coverPath)man.forEach((v,k)=>{if(!coverPath&&/cover/i.test(k)&&v.tipo.startsWith("image/"))coverPath=risolvi(base,v.href);});
+  let cover=null;
+  if(coverPath){
+    try{
+      const est=(coverPath.split(".").pop()||"").toLowerCase();
+      const mime=est==="png"?"image/png":est==="gif"?"image/gif":est==="webp"?"image/webp":est==="svg"?"image/svg+xml":"image/jpeg";
+      const grezza=await blobADataUrl(new Blob([await zipFile(z,coverPath)],{type:mime}));
+      cover=await rasterizza(grezza,COP_W,COP_H,"image/jpeg",.85);
+    }catch(e){}
+  }
+  return {pars,numPages:null,cover,titolo};
+}
+
+/* ============================== FB2 ============================== */
+function extractFb2(testoXml){
+  const doc=new DOMParser().parseFromString(testoXml,"application/xml");
+  if(doc.querySelector("parsererror"))throw new Error("FB2 non valido");
+  const tutti=s=>[...doc.getElementsByTagName("*")].filter(e=>e.localName===s);
+  const tb=tutti("book-title")[0];
+  const titolo=tb?tb.textContent.replace(/\s+/g," ").trim()||null:null;
+  const pars=[];
+  for(const body of tutti("body")){
+    if((body.getAttribute("name")||"")==="notes")continue;
+    (function walk(el){
+      for(const ch of el.children){
+        const n=ch.localName;
+        if(n==="title"||n==="subtitle"){
+          const t=ch.textContent.replace(/\s+/g," ").trim();
+          if(t)pars.push({text:t,page:null,head:true});
+        }else if(n==="p"||n==="v"||n==="text-author"){
+          const t=ch.textContent.replace(/\s+/g," ").trim();
+          if(t)pars.push({text:t,page:null});
+        }else walk(ch);
+      }
+    })(body);
+  }
+  let coverGrezza=null; // <coverpage><image l:href="#id"> → <binary id> in base64
+  const cp=tutti("coverpage")[0];
+  const img=cp?cp.getElementsByTagName("*")[0]:null;
+  if(img){
+    let ref=null;
+    for(const a of img.attributes)if(/href$/.test(a.name))ref=a.value;
+    if(ref&&ref[0]==="#"){
+      const bin=tutti("binary").find(b=>b.getAttribute("id")===ref.slice(1));
+      if(bin)coverGrezza="data:"+(bin.getAttribute("content-type")||"image/jpeg")+";base64,"+bin.textContent.replace(/\s+/g,"");
+    }
+  }
+  return {pars,numPages:null,coverGrezza,titolo};
+}
+
+/* ============================== copertine ============================== */
+const COP_W=320, COP_H=480;
+function blobADataUrl(blob){
+  return new Promise((res,rej)=>{
+    const r=new FileReader();
+    r.onload=()=>res(r.result); r.onerror=()=>rej(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+/* Ridimensiona qualunque immagine (anche SVG) in un dataURL raster compatto:
+   così la copertina si salva in cache e si consegna al servizio nativo. */
+function rasterizza(src,w,h,tipo,q){
+  return new Promise(res=>{
+    const img=new Image();
+    img.onload=()=>{
+      try{
+        const sc=Math.min((w||COP_W)/img.width,(h||COP_H)/img.height);
+        const c=document.createElement("canvas");
+        c.width=Math.max(1,Math.round(img.width*sc));
+        c.height=Math.max(1,Math.round(img.height*sc));
+        c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+        res(c.toDataURL(tipo||"image/jpeg",q||.85));
+      }catch(e){res(null);}
+    };
+    img.onerror=()=>res(null);
+    img.src=src;
+  });
+}
+function copHash(s){
+  let h=2166136261;
+  for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}
+  return h>>>0;
+}
+const COP_TEMI=[ // [fondo, tono, inchiostro]: palette da libreria, mai stridule
+  ["#1d3557","#457b9d","#f1faee"],
+  ["#5f0f40","#9a031e","#ffeedd"],
+  ["#283618","#606c38","#fefae0"],
+  ["#03045e","#0077b6","#caf0f8"],
+  ["#6f1d1b","#99582a","#ffe6a7"],
+  ["#3d405b","#81b29a","#f4f1de"],
+  ["#4a4e69","#9a8c98","#f2e9e4"],
+  ["#14213d","#fca311","#ffffff"],
+];
+/* La copertina disegnata dall'app per i libri che non ne hanno una:
+   palette e decorazione derivano dal titolo, così è sempre la stessa. */
+function copertinaSvg(nome,chiave){
+  const h=copHash(String(chiave||nome||"libro"));
+  const t=COP_TEMI[h%COP_TEMI.length];
+  const motivo=(h>>>3)%4;
+  const parole=String(nome||"Senza titolo").split(/\s+/), righe=[];
+  let r="";
+  for(const w of parole){
+    if((r+" "+w).trim().length>14&&r&&righe.length<4){righe.push(r);r=w;}
+    else r=(r?r+" ":"")+w;
+  }
+  if(r)righe.push(r);
+  if(righe.length>5){righe.length=5;}
+  if(righe.length===5&&righe[4].length>12)righe[4]=righe[4].slice(0,11)+"…";
+  const fs=righe.some(L=>L.length>12)||righe.length>3?26:30;
+  const y0=214-(righe.length-1)*19;
+  const esc2=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;");
+  const testoSvg=righe.map((L,i)=>'<text x="160" y="'+(y0+i*38)+'" text-anchor="middle" font-family="Georgia,\'Times New Roman\',serif" font-size="'+fs+'" font-weight="700" fill="'+t[2]+'">'+esc2(L)+"</text>").join("");
+  let deco="";
+  if(motivo===0)deco='<circle cx="160" cy="112" r="44" fill="none" stroke="'+t[2]+'" stroke-width="2" opacity=".85"/><circle cx="160" cy="112" r="27" fill="'+t[1]+'"/>';
+  else if(motivo===1)deco='<path d="M62 138 Q160 58 258 138" fill="none" stroke="'+t[1]+'" stroke-width="9" stroke-linecap="round"/><path d="M62 116 Q160 40 258 116" fill="none" stroke="'+t[2]+'" stroke-width="2.5" opacity=".9"/>';
+  else if(motivo===2)deco=[0,1,2,3,4].map(i=>'<rect x="'+(74+i*38)+'" y="'+(140-(26+((h>>>i)&7)*7))+'" width="17" height="'+(26+((h>>>i)&7)*7)+'" rx="4" fill="'+(i%2?t[1]:t[2])+'" opacity=".92"/>').join("");
+  else deco='<polygon points="160,64 208,152 112,152" fill="'+t[1]+'"/><polygon points="160,92 189,148 131,148" fill="'+t[2]+'" opacity=".92"/>';
+  const svg='<svg xmlns="http://www.w3.org/2000/svg" width="'+COP_W+'" height="'+COP_H+'" viewBox="0 0 320 480">'
+    +'<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1.25">'
+    +'<stop offset="0" stop-color="'+t[0]+'"/><stop offset="1" stop-color="'+t[1]+'"/></linearGradient></defs>'
+    +'<rect width="320" height="480" fill="url(#g)"/>'
+    +'<rect x="13" y="13" width="294" height="454" fill="none" stroke="'+t[2]+'" stroke-opacity=".38" stroke-width="1.5"/>'
+    +deco+testoSvg
+    +'<text x="160" y="447" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="12" letter-spacing="4" fill="'+t[2]+'" opacity=".75">LETTORE</text>'
+    +'</svg>';
+  return "data:image/svg+xml;charset=utf-8,"+encodeURIComponent(svg);
+}
+function copertinaGenerata(nome,chiave){ // rasterizzata: pronta per cache e nativo
+  return rasterizza(copertinaSvg(nome,chiave),COP_W,COP_H,"image/jpeg",.88);
+}
+/* Una vera copertina ha colori o zone scure in abbondanza; una pagina di solo
+   testo è quasi tutta bianca — in quel caso meglio la copertina disegnata. */
+function canvasSembraCopertina(c){
+  try{
+    const w=48,h=72,cc=document.createElement("canvas");
+    cc.width=w; cc.height=h;
+    const ctx=cc.getContext("2d",{willReadFrequently:true});
+    ctx.drawImage(c,0,0,w,h);
+    const d=ctx.getImageData(0,0,w,h).data;
+    let pieni=0;
+    for(let i=0;i<d.length;i+=4){
+      const r=d[i],g=d[i+1],b=d[i+2];
+      if(Math.max(r,g,b)-Math.min(r,g,b)>20||(r+g+b)/3<175)pieni++;
+    }
+    return pieni/(w*h)>0.12;
+  }catch(e){return true;}
 }
 
 /* ============================== indexeddb cache (cronologia di più libri) ============================== */
@@ -900,11 +1230,16 @@ function idbReq(mode,fn){
 function recenti(){
   try{const l=JSON.parse(localStorage.getItem("lettore:recenti")||"[]");return Array.isArray(l)?l:[];}catch(e){return[];}
 }
-function saveRecenti(l){try{localStorage.setItem("lettore:recenti",JSON.stringify(l));}catch(e){}}
+function saveRecenti(l){
+  try{localStorage.setItem("lettore:recenti",JSON.stringify(l));}
+  catch(e){ // quota piena: meglio l'indice senza miniature che niente indice
+    try{localStorage.setItem("lettore:recenti",JSON.stringify(l.map(r=>({...r,cover:null}))));}catch(e2){}
+  }
+}
 /* porta (o aggiorna) il libro in cima all'elenco dei recenti e pota i più vecchi */
 function touchRecenti(b,frasi){
   const l=recenti().filter(r=>r.key!==b.key);
-  l.unshift({key:b.key,name:b.name,numPages:b.numPages||0,frasi:frasi||0,quando:Date.now()});
+  l.unshift({key:b.key,name:b.name,numPages:b.numPages||0,frasi:frasi||0,quando:Date.now(),cover:b.cover||null});
   l.splice(MAX_RECENTI).forEach(d=>{
     idbReq("readwrite",st=>st.delete(d.key)).catch(()=>{});
     try{localStorage.removeItem("lettore:pos:"+d.key);}catch(e){}
@@ -951,15 +1286,21 @@ function renderRecenti(){
     let pos=0; try{pos=+localStorage.getItem("lettore:pos:"+r.key)||0;}catch(e){}
     const pct=r.frasi>1?Math.min(100,Math.round(pos/(r.frasi-1)*100)):0;
     const parti=[];
-    if(r.frasi)parti.push(pct+"% letto");
-    if(r.numPages)parti.push(r.numPages+" pagine");
+    if(r.frasi)parti.push(pct+"%");
+    if(r.numPages)parti.push(r.numPages+" pag.");
     if(r.quando)parti.push(new Date(r.quando).toLocaleDateString("it-IT",{day:"numeric",month:"short"}));
     const d=document.createElement("div");
     d.className="rec"; d.setAttribute("role","button"); d.tabIndex=0;
-    d.innerHTML='<div class="rbody"><div class="rtit"></div><div class="rsub"></div></div>'+
-                '<button class="rdel" type="button" aria-label="Togli dall\'elenco">✕</button>';
+    d.setAttribute("aria-label","Riapri «"+r.name+"»");
+    d.innerHTML='<button class="rdel" type="button" aria-label="Togli dalla libreria">✕</button>'+
+                '<div class="rsc"><div class="rlibro"><div class="rpag"></div><img alt=""></div></div>'+
+                '<div class="rtit"></div><div class="rsub"></div>'+
+                '<div class="rbar"><i></i></div>';
+    /* la copertina salvata, o quella disegnata al volo per i libri vecchi */
+    d.querySelector("img").src=r.cover||copertinaSvg(r.name,r.key);
     d.querySelector(".rtit").textContent=r.name;
     d.querySelector(".rsub").textContent=parti.join(" · ");
+    d.querySelector(".rbar i").style.width=pct+"%";
     d.addEventListener("click",e=>{if(!e.target.closest(".rdel"))apriRecente(r.key);});
     d.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();apriRecente(r.key);}});
     d.querySelector(".rdel").addEventListener("click",()=>{
@@ -967,7 +1308,7 @@ function renderRecenti(){
       idbReq("readwrite",st=>st.delete(r.key)).catch(()=>{});
       try{localStorage.removeItem("lettore:pos:"+r.key);}catch(e){}
       renderRecenti();
-      toast("«"+r.name+"» tolto dall'elenco.");
+      toast("«"+r.name+"» tolto dalla libreria.");
     });
     list.appendChild(d);
   });
@@ -1121,13 +1462,21 @@ async function openBook(b,{announce}={announce:true}){
   }
   showState("reader");
   if("mediaSession" in navigator){
-    try{navigator.mediaSession.metadata=new MediaMetadata({title:book.name,artist:"Lettore",album:"Lettura ad alta voce"});}catch(e){}
+    try{navigator.mediaSession.metadata=new MediaMetadata({
+      title:book.name,artist:"Lettore",album:"Lettura ad alta voce",
+      artwork:book.cover?[{src:book.cover,sizes:"320x480",type:book.cover.slice(5,book.cover.indexOf(";"))}]:[],
+    });}catch(e){}
   }
   let saved=0;
   try{saved=+localStorage.getItem("lettore:pos:"+book.key)||0;}catch(e){}
   setIndex(Math.min(saved,sents.length-1),{scroll:true});
   if(announce&&saved>0)toast("Riprendo da dove eri rimasto"+(sents[idx].page?" — pagina "+sents[idx].page:"")+".");
   touchRecenti(book,sents.length);
+  if(!b.cover){ // libri in cache dalle versioni senza copertine: disegnala ora
+    copertinaGenerata(b.name,b.key).then(c=>{
+      if(c&&book===b){b.cover=c;cacheBook(b);touchRecenti(b,sents.length);}
+    });
+  }
 }
 
 async function handleFile(file){
@@ -1149,12 +1498,29 @@ async function handleFile(file){
       ex=await extractDocx(buf);
     }else if(ext==="txt"||file.type==="text/plain"){
       ex=extractTxt(await file.text());
+    }else if(ext==="epub"||file.type==="application/epub+zip"){
+      ex=await extractEpub(await file.arrayBuffer(),(c,n)=>{busyMsg.textContent="Sto leggendo i capitoli… "+c+" di "+n;});
+    }else if(ext==="fb2"){
+      ex=extractFb2(decodificaXml(await file.arrayBuffer()));
+    }else if(ext==="zip"&&/\.fb2\.zip$/i.test(file.name)){
+      const z=await unzipTutto(await file.arrayBuffer());
+      const dentro=[...z.voci.keys()].find(k=>/\.fb2$/i.test(k));
+      if(!dentro)throw new Error("nell'archivio non c'è un FB2");
+      ex=extractFb2(decodificaXml((await zipFile(z,dentro)).slice().buffer));
+    }else if(ext==="mobi"||ext==="azw"||ext==="azw3"){
+      showState(book?"reader":"landing");
+      toast("I formati Kindle (MOBI/AZW) sono chiusi: convertili in EPUB con Calibre (gratuito) e riprova.",7000);
+      return;
     }else{
       showState(book?"reader":"landing");
-      toast("Formato non riconosciuto: apri un PDF, un DOCX o un TXT.",4500);
+      toast("Formato non riconosciuto: apri un PDF, un EPUB, un DOCX, un FB2 o un TXT.",5000);
       return;
     }
-    const b={key,name:file.name.replace(/\.[^.]+$/,""),pars:ex.pars,numPages:ex.numPages};
+    const nome=ex.titolo||file.name.replace(/\.[^.]+$/,"");
+    let cover=ex.cover||null;
+    if(!cover&&ex.coverGrezza)cover=await rasterizza(ex.coverGrezza,COP_W,COP_H,"image/jpeg",.85);
+    if(!cover)cover=await copertinaGenerata(nome,key);
+    const b={key,name:nome,pars:ex.pars,numPages:ex.numPages,cover};
     await openBook(b,{announce:true});
     if(sents.length)cacheBook(b);
   }catch(err){
@@ -1301,7 +1667,9 @@ function setPlaying(on){
           numPages:book&&book.numPages?book.numPages:0,
           chiave:book?book.key:"",
           /* l'indice del libro finisce nel catalogo di Android Auto */
-          capitoli:capitoli.map(c=>({i:c.i,t:c.t,p:c.page||0}))
+          capitoli:capitoli.map(c=>({i:c.i,t:c.t,p:c.page||0})),
+          /* la copertina diventa l'album art su Auto, orologio e notifica */
+          copertina:(book&&book.cover&&book.cover.startsWith("data:image"))?book.cover:""
         }).catch(()=>{});
         /* se il timer 🌙 era già impostato, ricordalo al servizio appena (ri)nato */
         if(sleepAt>Date.now())CAP.LetturaService.timer({minuti:(sleepAt-Date.now())/60000}).catch(()=>{});

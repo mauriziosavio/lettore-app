@@ -75,6 +75,7 @@ public class ReadingService extends MediaBrowserServiceCompat {
     private static List<String> qCapT;
     private static int[] qCapI;
     private static int[] qCapP;
+    private static byte[] qCopertina;
     private static boolean qNuova = false;
 
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -113,6 +114,10 @@ public class ReadingService extends MediaBrowserServiceCompat {
     private int[] fraseSegmDa;   // primo carattere di ogni schermata
     private int segmCorrente = 0;
     private int segmPos = -1;    // a quale frase appartengono le schermate preparate
+    /* la copertina del libro: album art su Auto/orologio, icona grande in notifica */
+    private android.graphics.Bitmap copertina;
+    private byte[] copertinaBytes;
+    private static final String COPERTINA_FILE = "copertina.img";
 
     /* Scollegare Android Auto, il Bluetooth o le cuffie dirotta l'audio
        sull'altoparlante del telefono: qualunque app multimediale deve fermarsi. */
@@ -129,12 +134,12 @@ public class ReadingService extends MediaBrowserServiceCompat {
 
     static void caricaCoda(Context c, List<String> frasi, int[] pagine, int[] pause,
                            int da, float rate, String titolo, int numPages, String chiave,
-                           List<String> capT, int[] capI, int[] capP) {
+                           List<String> capT, int[] capI, int[] capP, byte[] copertina) {
         try {
             synchronized (ReadingService.class) {
                 qFrasi = frasi; qPagine = pagine; qPause = pause; qDa = da;
                 qRate = rate; qTitolo = titolo; qNumPages = numPages; qChiave = chiave;
-                qCapT = capT; qCapI = capI; qCapP = capP;
+                qCapT = capT; qCapI = capI; qCapP = capP; qCopertina = copertina;
                 qNuova = true;
             }
             ReadingService s = instance;
@@ -359,6 +364,7 @@ public class ReadingService extends MediaBrowserServiceCompat {
                     frasi = qFrasi; pagine = qPagine; pause = qPause; pos = Math.max(0, qDa);
                     rate = qRate; title = qTitolo; numPages = qNumPages; chiave = qChiave;
                     capTitoli = qCapT; capFrasi = qCapI; capPagine = qCapP;
+                    if (qCopertina != null) copertinaBytes = qCopertina;
                     qNuova = false;
                 }
             }
@@ -369,9 +375,13 @@ public class ReadingService extends MediaBrowserServiceCompat {
                 attesaFocus = false;
                 playing = true;
                 statParte();
+                try { // la copertina consegnata dal JS diventa l'album art
+                    if (copertinaBytes != null) copertina =
+                        android.graphics.BitmapFactory.decodeByteArray(copertinaBytes, 0, copertinaBytes.length);
+                } catch (Throwable ignored) { }
                 salva();
                 salvaLibroSuDisco(frasi, pagine, pause, rate, title, numPages, chiave,
-                    capTitoli, capFrasi, capPagine);
+                    capTitoli, capFrasi, capPagine, copertinaBytes);
                 if (ttsPronto) parla();
                 else initTts();
                 LetturaServicePlugin.emit("stato", pos, true); // conferma subito l'icona ⏸ nel JS
@@ -651,8 +661,18 @@ public class ReadingService extends MediaBrowserServiceCompat {
      *  lettura può ripartire da Auto o dalla notifica ad app spenta. */
     private void salvaLibroSuDisco(final List<String> f, final int[] pg, final int[] pa,
                                    final float r, final String t, final int np, final String ch,
-                                   final List<String> ct, final int[] ci, final int[] cp) {
+                                   final List<String> ct, final int[] ci, final int[] cp,
+                                   final byte[] cop) {
         new Thread(() -> {
+            try { // copertina in un file suo: bitmap pronta anche a servizio freddo
+                if (cop != null) {
+                    java.io.File cf = new java.io.File(getFilesDir(), COPERTINA_FILE + ".tmp");
+                    try (java.io.FileOutputStream out = new java.io.FileOutputStream(cf)) {
+                        out.write(cop);
+                    }
+                    cf.renameTo(new java.io.File(getFilesDir(), COPERTINA_FILE));
+                }
+            } catch (Throwable ignored) { }
             try {
                 org.json.JSONObject o = new org.json.JSONObject();
                 org.json.JSONArray af = new org.json.JSONArray();
@@ -784,12 +804,13 @@ public class ReadingService extends MediaBrowserServiceCompat {
                 String sotto = pg > 0
                     ? "Riprendi da pagina " + pg + (np > 0 ? " di " + np : "")
                     : "Riprendi la lettura";
-                MediaDescriptionCompat d = new MediaDescriptionCompat.Builder()
+                MediaDescriptionCompat.Builder db = new MediaDescriptionCompat.Builder()
                     .setMediaId("riprendi")
                     .setTitle(t)
-                    .setSubtitle(sotto)
-                    .build();
-                items.add(new MediaBrowserCompat.MediaItem(d, MediaBrowserCompat.MediaItem.FLAG_PLAYABLE));
+                    .setSubtitle(sotto);
+                caricaCopertinaSeServe(); // la copertina accanto a "Riprendi" sull'auto
+                if (copertina != null) db.setIconBitmap(copertina);
+                items.add(new MediaBrowserCompat.MediaItem(db.build(), MediaBrowserCompat.MediaItem.FLAG_PLAYABLE));
                 caricaCapitoliDaPrefs();
                 if (capTitoli != null && !capTitoli.isEmpty()) {
                     MediaDescriptionCompat dc = new MediaDescriptionCompat.Builder()
@@ -911,6 +932,18 @@ public class ReadingService extends MediaBrowserServiceCompat {
         return PendingIntent.getService(this, rc, i, PendingIntent.FLAG_IMMUTABLE);
     }
 
+    private boolean copertinaCercata = false;
+
+    /** A servizio appena nato (bind di Auto) la copertina si rilegge dal file, una volta sola. */
+    private void caricaCopertinaSeServe() {
+        if (copertina != null || copertinaCercata) return;
+        copertinaCercata = true;
+        try {
+            java.io.File f = new java.io.File(getFilesDir(), COPERTINA_FILE);
+            if (f.exists()) copertina = android.graphics.BitmapFactory.decodeFile(f.getAbsolutePath());
+        } catch (Throwable ignored) { }
+    }
+
     /** Lo schermo di Auto mostra ~2 righe di titolo e tronca il resto: la frase
      *  viene spezzata in schermate da ~60 caratteri (a confine di parola) e
      *  avanzaSegmento le sfoglia man mano che la voce le pronuncia. */
@@ -983,11 +1016,16 @@ public class ReadingService extends MediaBrowserServiceCompat {
                 riga1 = fr;
                 riga2 = title + (dove.isEmpty() ? "" : " · " + dove);
             }
-            session.setMetadata(new MediaMetadataCompat.Builder()
+            MediaMetadataCompat.Builder mb = new MediaMetadataCompat.Builder()
                 .putString(MediaMetadataCompat.METADATA_KEY_TITLE, riga1)
                 .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, riga2)
-                .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, title)
-                .build());
+                .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, title);
+            caricaCopertinaSeServe();
+            if (copertina != null) {
+                mb.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, copertina);
+                mb.putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, copertina);
+            }
+            session.setMetadata(mb.build());
         } catch (Throwable ignored) { }
     }
 
@@ -1038,6 +1076,8 @@ public class ReadingService extends MediaBrowserServiceCompat {
                 .addAction(new NotificationCompat.Action(
                     android.R.drawable.ic_menu_close_clear_cancel, "Chiudi", azione(AZ_STOP, 5)))
                 .setDeleteIntent(azione(AZ_STOP, 6)); // notifica scacciata via = stop
+            caricaCopertinaSeServe();
+            if (copertina != null) nb.setLargeIcon(copertina); // la copertina nel mini-lettore
             if (session != null) {
                 nb.setStyle(new androidx.media.app.NotificationCompat.MediaStyle()
                     .setMediaSession(session.getSessionToken())
