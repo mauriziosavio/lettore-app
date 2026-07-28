@@ -149,7 +149,8 @@
   }
   .rec .rtit{
     margin:12px 2px 0; font-weight:600; font-size:.82rem; line-height:1.3;
-    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+    display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden;
+    overflow-wrap:anywhere; /* i nomi di file lunghissimi vanno comunque a capo */
   }
   .rec .rsub{font-size:.72rem; color:var(--muted); margin:3px 2px 0; font-variant-numeric:tabular-nums}
   .rec .rbar{height:3px; border-radius:2px; margin:7px 2px 0; overflow:hidden;
@@ -338,7 +339,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.22</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.23</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -1138,6 +1139,15 @@ function rasterizza(src,w,h,tipo,q){
     img.src=src;
   });
 }
+/* I nomi dei file arrivano spesso con _ o . al posto degli spazi: così il
+   titolo si legge male e sulla copertina non va a capo. Qui torna umano. */
+function pulisciNome(s){
+  s=String(s||"").replace(/[_+]+/g," ");
+  if(!s.includes(" "))s=s.replace(/-+/g," ");                  // trattini usati da spazi
+  if(!s.includes(" "))s=s.replace(/\.(?=[A-Za-zÀ-ÿ]{2})/g," "); // punti usati da spazi
+  s=s.replace(/\s+/g," ").trim();
+  return s||"Senza titolo";
+}
 function copHash(s){
   let h=2166136261;
   for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619);}
@@ -1159,7 +1169,15 @@ function copertinaSvg(nome,chiave){
   const h=copHash(String(chiave||nome||"libro"));
   const t=COP_TEMI[h%COP_TEMI.length];
   const motivo=(h>>>3)%4;
-  const parole=String(nome||"Senza titolo").split(/\s+/), righe=[];
+  /* titolo a righe: parole oltre i 13 caratteri sillabate a mano,
+     così anche un nome di file tutto attaccato va a capo */
+  const parole=pulisciNome(nome).split(/\s+/).flatMap(w=>{
+    const pezzi=[];
+    while(w.length>13){pezzi.push(w.slice(0,12)+"-");w=w.slice(12);}
+    pezzi.push(w);
+    return pezzi;
+  });
+  const righe=[];
   let r="";
   for(const w of parole){
     if((r+" "+w).trim().length>14&&r&&righe.length<4){righe.push(r);r=w;}
@@ -1177,6 +1195,8 @@ function copertinaSvg(nome,chiave){
   else if(motivo===1)deco='<path d="M62 138 Q160 58 258 138" fill="none" stroke="'+t[1]+'" stroke-width="9" stroke-linecap="round"/><path d="M62 116 Q160 40 258 116" fill="none" stroke="'+t[2]+'" stroke-width="2.5" opacity=".9"/>';
   else if(motivo===2)deco=[0,1,2,3,4].map(i=>'<rect x="'+(74+i*38)+'" y="'+(140-(26+((h>>>i)&7)*7))+'" width="17" height="'+(26+((h>>>i)&7)*7)+'" rx="4" fill="'+(i%2?t[1]:t[2])+'" opacity=".92"/>').join("");
   else deco='<polygon points="160,64 208,152 112,152" fill="'+t[1]+'"/><polygon points="160,92 189,148 131,148" fill="'+t[2]+'" opacity=".92"/>';
+  /* titolo su 4-5 righe: la decorazione si stringe e sale, senza toccare il testo */
+  if(righe.length>3)deco='<g transform="translate(160 78) scale(0.56) translate(-160 -110)">'+deco+"</g>";
   const svg='<svg xmlns="http://www.w3.org/2000/svg" width="'+COP_W+'" height="'+COP_H+'" viewBox="0 0 320 480">'
     +'<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1.25">'
     +'<stop offset="0" stop-color="'+t[0]+'"/><stop offset="1" stop-color="'+t[1]+'"/></linearGradient></defs>'
@@ -1289,16 +1309,17 @@ function renderRecenti(){
     if(r.frasi)parti.push(pct+"%");
     if(r.numPages)parti.push(r.numPages+" pag.");
     if(r.quando)parti.push(new Date(r.quando).toLocaleDateString("it-IT",{day:"numeric",month:"short"}));
+    const nome=pulisciNome(r.name);
     const d=document.createElement("div");
     d.className="rec"; d.setAttribute("role","button"); d.tabIndex=0;
-    d.setAttribute("aria-label","Riapri «"+r.name+"»");
+    d.setAttribute("aria-label","Riapri «"+nome+"»");
     d.innerHTML='<button class="rdel" type="button" aria-label="Togli dalla libreria">✕</button>'+
                 '<div class="rsc"><div class="rlibro"><div class="rpag"></div><img alt=""></div></div>'+
                 '<div class="rtit"></div><div class="rsub"></div>'+
                 '<div class="rbar"><i></i></div>';
     /* la copertina salvata, o quella disegnata al volo per i libri vecchi */
-    d.querySelector("img").src=r.cover||copertinaSvg(r.name,r.key);
-    d.querySelector(".rtit").textContent=r.name;
+    d.querySelector("img").src=r.cover||copertinaSvg(nome,r.key);
+    d.querySelector(".rtit").textContent=nome;
     d.querySelector(".rsub").textContent=parti.join(" · ");
     d.querySelector(".rbar i").style.width=pct+"%";
     d.addEventListener("click",e=>{if(!e.target.closest(".rdel"))apriRecente(r.key);});
@@ -1308,7 +1329,7 @@ function renderRecenti(){
       idbReq("readwrite",st=>st.delete(r.key)).catch(()=>{});
       try{localStorage.removeItem("lettore:pos:"+r.key);}catch(e){}
       renderRecenti();
-      toast("«"+r.name+"» tolto dalla libreria.");
+      toast("«"+nome+"» tolto dalla libreria.");
     });
     list.appendChild(d);
   });
@@ -1453,6 +1474,8 @@ function etaAggiorna(){
 }
 
 async function openBook(b,{announce}={announce:true}){
+  const nomeVecchio=b.name;
+  b.name=pulisciNome(b.name); // i libri già in cache si ripuliscono da soli
   book=b;
   renderBook();
   if(!sents.length){
@@ -1472,10 +1495,14 @@ async function openBook(b,{announce}={announce:true}){
   setIndex(Math.min(saved,sents.length-1),{scroll:true});
   if(announce&&saved>0)toast("Riprendo da dove eri rimasto"+(sents[idx].page?" — pagina "+sents[idx].page:"")+".");
   touchRecenti(book,sents.length);
-  if(!b.cover){ // libri in cache dalle versioni senza copertine: disegnala ora
+  /* copertina mancante, oppure disegnata quando il nome era ancora "sporco"
+     (coverGen===false = copertina vera del libro: quella non si tocca) */
+  if(!b.cover||(b.coverGen!==false&&nomeVecchio!==b.name)){
     copertinaGenerata(b.name,b.key).then(c=>{
-      if(c&&book===b){b.cover=c;cacheBook(b);touchRecenti(b,sents.length);}
+      if(c&&book===b){b.cover=c;b.coverGen=true;cacheBook(b);touchRecenti(b,sents.length);}
     });
+  }else if(nomeVecchio!==b.name){
+    cacheBook(b); touchRecenti(b,sents.length); // da salvare c'è solo la rinomina
   }
 }
 
@@ -1516,11 +1543,11 @@ async function handleFile(file){
       toast("Formato non riconosciuto: apri un PDF, un EPUB, un DOCX, un FB2 o un TXT.",5000);
       return;
     }
-    const nome=ex.titolo||file.name.replace(/\.[^.]+$/,"");
-    let cover=ex.cover||null;
+    const nome=pulisciNome(ex.titolo||file.name.replace(/\.[^.]+$/,""));
+    let cover=ex.cover||null, coverGen=false;
     if(!cover&&ex.coverGrezza)cover=await rasterizza(ex.coverGrezza,COP_W,COP_H,"image/jpeg",.85);
-    if(!cover)cover=await copertinaGenerata(nome,key);
-    const b={key,name:nome,pars:ex.pars,numPages:ex.numPages,cover};
+    if(!cover){cover=await copertinaGenerata(nome,key);coverGen=true;}
+    const b={key,name:nome,pars:ex.pars,numPages:ex.numPages,cover,coverGen};
     await openBook(b,{announce:true});
     if(sents.length)cacheBook(b);
   }catch(err){
@@ -2107,7 +2134,7 @@ document.addEventListener("keydown",e=>{
   const l=recenti();
   if(l.length){ // il caricamento dalla cache può durare secondi: dillo, non mostrare la landing
     showState("busy");
-    busyMsg.textContent="Riapro «"+l[0].name+"»…";
+    busyMsg.textContent="Riapro «"+pulisciNome(l[0].name)+"»…";
   }
   /* Il segnalibro nativo va letto PRIMA di aprire il libro: mentre il servizio
      leggeva in background il WebView era congelato, quindi il segnalibro web
