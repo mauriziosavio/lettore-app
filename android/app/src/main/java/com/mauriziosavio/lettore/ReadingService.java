@@ -52,6 +52,8 @@ public class ReadingService extends MediaBrowserServiceCompat {
     private static final int NOTIFICATION_ID = 1;
     private static final String RADICE = "radice";
     private static final String CAPITOLI_ID = "capitoli";
+    private static final String PAGINE_ID = "pagine";
+    private static final int PAG_GRUPPO = 50; // pagine per cartella nell'elenco di Auto
     private static final String LIBRO_FILE = "libro.json";
     static final String AZ_PLAY = "com.mauriziosavio.lettore.PLAY";
     static final String AZ_PAUSE = "com.mauriziosavio.lettore.PAUSE";
@@ -105,6 +107,12 @@ public class ReadingService extends MediaBrowserServiceCompat {
     private List<String> capTitoli; // capitoli per il catalogo di Android Auto
     private int[] capFrasi;
     private int[] capPagine;
+    /* lo schermo di Auto mostra ~2 righe di titolo e tronca il resto coi puntini:
+       la frase corrente viene spezzata in "schermate" e sfogliata insieme alla voce */
+    private String[] fraseSegm;
+    private int[] fraseSegmDa;   // primo carattere di ogni schermata
+    private int segmCorrente = 0;
+    private int segmPos = -1;    // a quale frase appartengono le schermate preparate
 
     /* Scollegare Android Auto, il Bluetooth o le cuffie dirotta l'audio
        sull'altoparlante del telefono: qualunque app multimediale deve fermarsi. */
@@ -228,16 +236,43 @@ public class ReadingService extends MediaBrowserServiceCompat {
                 @Override public void onSkipToNext() { main.post(() -> spostati(1)); }
                 @Override public void onSkipToPrevious() { main.post(() -> spostati(-1)); }
                 @Override public void onPlayFromMediaId(String mediaId, android.os.Bundle extras) {
-                    int a = -1; // "riprendi" = segnalibro; "cap:N" = dalla frase N (indice capitoli di Auto)
+                    // "riprendi" = segnalibro; "cap:N" = dalla frase N; "pag:N" = dalla pagina N
+                    int a = -1, pg = 0;
                     try {
                         if (mediaId != null && mediaId.startsWith("cap:"))
                             a = Integer.parseInt(mediaId.substring(4));
+                        else if (mediaId != null && mediaId.startsWith("pag:"))
+                            pg = Integer.parseInt(mediaId.substring(4));
                     } catch (Throwable ignored) { }
-                    final int da = a;
-                    main.post(() -> riprendi(da));
+                    final int da = a, dp = pg;
+                    main.post(() -> riprendi(da, dp));
                 }
                 @Override public void onPlayFromSearch(String query, android.os.Bundle extras) {
-                    main.post(ReadingService.this::riprendi); // "Ehi Google, riprendi la lettura"
+                    // "Ehi Google, riprendi la lettura" — o "leggi pagina 120", o un titolo di capitolo
+                    int a = -1, pg = 0;
+                    try {
+                        if (query != null && !query.trim().isEmpty()) {
+                            java.util.regex.Matcher m = java.util.regex.Pattern
+                                .compile("pagina\\s*(\\d{1,5})", java.util.regex.Pattern.CASE_INSENSITIVE)
+                                .matcher(query);
+                            if (m.find()) {
+                                pg = Integer.parseInt(m.group(1));
+                            } else {
+                                caricaCapitoliDaPrefs();
+                                if (capTitoli != null) {
+                                    String q = query.toLowerCase(Locale.ITALIAN).trim();
+                                    for (int k = 0; k < capTitoli.size(); k++) {
+                                        if (capTitoli.get(k).toLowerCase(Locale.ITALIAN).contains(q)) {
+                                            a = capFrasi != null && k < capFrasi.length ? capFrasi[k] : -1;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } catch (Throwable ignored) { }
+                    final int da = a, dp = pg;
+                    main.post(() -> riprendi(da, dp)); // senza indicazioni: dal segnalibro
                 }
                 @Override public void onCustomAction(String action, android.os.Bundle extras) {
                     if ("CHIUDI".equals(action)) main.post(ReadingService.this::fermaTutto);
@@ -300,6 +335,12 @@ public class ReadingService extends MediaBrowserServiceCompat {
                         try {
                             if (id != null && id.startsWith("u" + gen + "-")) {
                                 LetturaServicePlugin.emitParola(pos, start);
+                                // Auto: la voce è entrata nella schermata successiva della frase
+                                if (fraseSegm != null && segmPos == pos
+                                        && segmCorrente + 1 < fraseSegm.length
+                                        && start >= fraseSegmDa[segmCorrente + 1]) {
+                                    main.post(() -> avanzaSegmento(start));
+                                }
                             }
                         } catch (Throwable ignored) { }
                     }
@@ -354,6 +395,7 @@ public class ReadingService extends MediaBrowserServiceCompat {
             }
             parlaInizio = SystemClock.elapsedRealtime();
             armaGuardia(frase.length());
+            preparaSegmenti(frase); // Auto sfoglia la frase a schermate, insieme alla voce
             aggiornaMetadata(); // su Auto/orologio si vede la frase che sta leggendo
             if (pagineCorrente() != ultimaPagina) refresh();
         } catch (Throwable ignored) { }
@@ -522,18 +564,37 @@ public class ReadingService extends MediaBrowserServiceCompat {
 
     /* ---- ripresa a freddo (Android Auto / notifica con app spenta) ---- */
 
-    private void riprendi() { riprendi(-1); }
+    private void riprendi() { riprendi(-1, 0); }
+
+    /** Prima frase della pagina pg (pagine[] cresce con le frasi: ricerca binaria). */
+    private int frasePerPagina(int pg) {
+        try {
+            if (pagine == null || pagine.length == 0) return -1;
+            int lo = 0, hi = pagine.length - 1, r = -1;
+            while (lo <= hi) {
+                int m = (lo + hi) / 2;
+                if (pagine[m] >= pg) { r = m; hi = m - 1; } else lo = m + 1;
+            }
+            return r >= 0 ? r : pagine.length - 1; // oltre l'ultima pagina: vai in fondo
+        } catch (Throwable ignored) { return -1; }
+    }
+
+    /** Salto che accetta anche una pagina come destinazione (pg>0 vince su a). */
+    private void saltaA(int a, int pg) {
+        if (pg > 0) { int i = frasePerPagina(pg); if (i >= 0) a = i; }
+        salta(a, 0, true);
+    }
 
     /** Play senza libro in memoria: se il JS non l'ha ancora consegnato,
      *  lo ricarica da libro.json e riparte dal segnalibro salvato.
-     *  a>=0 = riparti dalla frase a (salto di capitolo dall'indice di Auto). */
-    private void riprendi(int a) {
+     *  a>=0 = riparti dalla frase a (indice di Auto); pg>0 = dalla pagina pg. */
+    private void riprendi(int a, int pg) {
         try { // da bound (Auto) a servizio avviato: sopravvive quando Auto si scollega
             Intent i = new Intent(this, ReadingService.class);
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(i);
             else startService(i);
         } catch (Throwable ignored) { }
-        if (frasi != null) { salta(a, 0, true); return; }
+        if (frasi != null) { saltaA(a, pg); return; }
         new Thread(() -> {
             try {
                 java.io.File f = new java.io.File(getFilesDir(), LIBRO_FILE);
@@ -570,11 +631,12 @@ public class ReadingService extends MediaBrowserServiceCompat {
                     cpg[i] = x.optInt("p", 0);
                 }
                 main.post(() -> {
-                    if (frasi != null) { salta(a, 0, true); return; } // nel frattempo è arrivato dal JS
+                    if (frasi != null) { saltaA(a, pg); return; } // nel frattempo è arrivato dal JS
                     frasi = nf; pagine = np; pause = nu; rate = r;
                     title = t; numPages = npg; chiave = ch;
                     if (!ct.isEmpty()) { capTitoli = ct; capFrasi = ci; capPagine = cpg; }
                     int p = a;
+                    if (pg > 0) { int fi = frasePerPagina(pg); if (fi >= 0) p = fi; }
                     if (p < 0) {
                         try { p = getSharedPreferences("lettura", MODE_PRIVATE).getInt("pos", 0); } catch (Throwable ignored) { p = 0; }
                     }
@@ -674,6 +736,39 @@ public class ReadingService extends MediaBrowserServiceCompat {
                 result.sendResult(items);
                 return;
             }
+            if (PAGINE_ID.equals(parentId) || parentId.startsWith("pgrp:")) {
+                // l'elenco delle pagine: diretto se poche, a gruppi da 50 se tante
+                SharedPreferences pp = getSharedPreferences("lettura", MODE_PRIVATE);
+                int np = numPages > 0 ? numPages : pp.getInt("numPages", 0);
+                int cur = frasi != null ? pagineCorrente() : pp.getInt("pagina", 0);
+                if (PAGINE_ID.equals(parentId) && np > PAG_GRUPPO) {
+                    for (int da = 1; da <= np; da += PAG_GRUPPO) {
+                        int fine = Math.min(np, da + PAG_GRUPPO - 1);
+                        MediaDescriptionCompat d = new MediaDescriptionCompat.Builder()
+                            .setMediaId("pgrp:" + da)
+                            .setTitle("Pagine " + da + " – " + fine)
+                            .setSubtitle(cur >= da && cur <= fine ? "Sei qui" : null)
+                            .build();
+                        items.add(new MediaBrowserCompat.MediaItem(d, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE));
+                    }
+                } else {
+                    int da = 1, fine = np;
+                    if (parentId.startsWith("pgrp:")) {
+                        try { da = Integer.parseInt(parentId.substring(5)); } catch (Throwable ignored) { }
+                        fine = Math.min(np, da + PAG_GRUPPO - 1);
+                    }
+                    for (int k = da; k <= fine; k++) {
+                        MediaDescriptionCompat d = new MediaDescriptionCompat.Builder()
+                            .setMediaId("pag:" + k)
+                            .setTitle("Pagina " + k)
+                            .setSubtitle(k == cur ? "Sei qui" : null)
+                            .build();
+                        items.add(new MediaBrowserCompat.MediaItem(d, MediaBrowserCompat.MediaItem.FLAG_PLAYABLE));
+                    }
+                }
+                result.sendResult(items);
+                return;
+            }
             String t = title;
             int pg, np = numPages;
             SharedPreferences p = getSharedPreferences("lettura", MODE_PRIVATE);
@@ -703,6 +798,14 @@ public class ReadingService extends MediaBrowserServiceCompat {
                         .setSubtitle(capTitoli.size() + (capTitoli.size() == 1 ? " capitolo" : " capitoli"))
                         .build();
                     items.add(new MediaBrowserCompat.MediaItem(dc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE));
+                }
+                if (np > 1) { // salto diretto a una pagina, sfogliando l'elenco
+                    MediaDescriptionCompat dpg = new MediaDescriptionCompat.Builder()
+                        .setMediaId(PAGINE_ID)
+                        .setTitle("Pagine")
+                        .setSubtitle(pg > 0 ? "Sei a pagina " + pg + " di " + np : np + " pagine")
+                        .build();
+                    items.add(new MediaBrowserCompat.MediaItem(dpg, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE));
                 }
             }
         } catch (Throwable ignored) { }
@@ -808,6 +911,55 @@ public class ReadingService extends MediaBrowserServiceCompat {
         return PendingIntent.getService(this, rc, i, PendingIntent.FLAG_IMMUTABLE);
     }
 
+    /** Lo schermo di Auto mostra ~2 righe di titolo e tronca il resto: la frase
+     *  viene spezzata in schermate da ~60 caratteri (a confine di parola) e
+     *  avanzaSegmento le sfoglia man mano che la voce le pronuncia. */
+    private static final int SEGM_MAX = 60;
+
+    private void preparaSegmenti(String frase) {
+        try {
+            if (frase == null) frase = "";
+            if (frase.length() <= SEGM_MAX + 12) { // corta: una schermata sola
+                fraseSegm = new String[]{ frase };
+                fraseSegmDa = new int[]{ 0 };
+            } else {
+                List<String> parti = new ArrayList<>();
+                List<Integer> inizi = new ArrayList<>();
+                int da = 0, n = frase.length();
+                while (da < n) {
+                    int fine = Math.min(n, da + SEGM_MAX);
+                    if (fine < n) {
+                        int sp = frase.lastIndexOf(' ', fine);
+                        if (sp > da + 20) fine = sp; // spezza all'ultimo spazio, mai troppo corto
+                    }
+                    inizi.add(da);
+                    parti.add(frase.substring(da, fine).trim());
+                    da = fine;
+                    while (da < n && frase.charAt(da) == ' ') da++;
+                }
+                fraseSegm = parti.toArray(new String[0]);
+                fraseSegmDa = new int[inizi.size()];
+                for (int k = 0; k < inizi.size(); k++) fraseSegmDa[k] = inizi.get(k);
+            }
+        } catch (Throwable t) {
+            fraseSegm = new String[]{ frase == null ? "" : frase };
+            fraseSegmDa = new int[]{ 0 };
+        }
+        segmCorrente = 0;
+        segmPos = pos;
+    }
+
+    /** onRangeStart dice a che carattere è arrivata la voce: se ha superato
+     *  l'inizio di una schermata successiva, lo schermo di Auto va voltato. */
+    private void avanzaSegmento(int start) {
+        try {
+            if (fraseSegm == null || segmPos != pos) return;
+            int s = segmCorrente;
+            while (s + 1 < fraseSegm.length && start >= fraseSegmDa[s + 1]) s++;
+            if (s != segmCorrente) { segmCorrente = s; aggiornaMetadata(); }
+        } catch (Throwable ignored) { }
+    }
+
     /** Sullo schermo di Android Auto (e sull'orologio) la riga grande è il titolo
      *  della sessione: mentre legge ci mettiamo la FRASE pronunciata — il "testo
      *  che scorre" più vicino al telefono che i template di Auto permettano.
@@ -821,7 +973,13 @@ public class ReadingService extends MediaBrowserServiceCompat {
             String riga2 = dove.isEmpty() ? (playing ? "Lettura in corso" : "In pausa") : dove;
             if (playing && frasi != null && pos >= 0 && pos < frasi.size()) {
                 String fr = frasi.get(pos);
-                if (fr.length() > 160) fr = fr.substring(0, 157) + "…";
+                if (fraseSegm != null && segmPos == pos && segmCorrente < fraseSegm.length) {
+                    // la schermata corrente della frase, con i puntini di continuazione
+                    fr = (segmCorrente > 0 ? "… " : "") + fraseSegm[segmCorrente]
+                       + (segmCorrente + 1 < fraseSegm.length ? " …" : "");
+                } else if (fr.length() > 160) {
+                    fr = fr.substring(0, 157) + "…";
+                }
                 riga1 = fr;
                 riga2 = title + (dove.isEmpty() ? "" : " · " + dove);
             }

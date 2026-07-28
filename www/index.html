@@ -262,6 +262,36 @@
   }
   .shChiudi{border:none;background:none;color:var(--muted);font-size:1.05rem;cursor:pointer;padding:6px 10px;border-radius:50%}
   #tocList{overflow:auto; padding:8px 10px calc(14px + env(safe-area-inset-bottom))}
+  #tocTools{
+    display:flex; flex-direction:column; gap:8px;
+    padding:12px 14px; border-bottom:1px solid var(--line);
+  }
+  .tocRiga{display:flex; align-items:center; gap:8px}
+  #cercaInp{
+    flex:1; min-width:0; border:1px solid var(--line); background:var(--paper-2);
+    color:var(--ink); border-radius:10px; padding:10px 12px; font-size:.92rem;
+  }
+  #pagLab{font-size:.9rem}
+  #pagInp{
+    width:86px; border:1px solid var(--line); background:var(--paper-2); color:var(--ink);
+    border-radius:10px; padding:10px 8px; font-size:.92rem; text-align:center;
+    font-variant-numeric:tabular-nums; -moz-appearance:textfield;
+  }
+  #pagInp::-webkit-outer-spin-button,#pagInp::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+  #pagTot{color:var(--muted); font-size:.85rem; flex:1}
+  #pagVai{
+    border:none; background:var(--accent); color:var(--accent-ink);
+    border-radius:10px; padding:10px 18px; font-weight:600; cursor:pointer; font-size:.92rem;
+  }
+  .tocVuoto{padding:16px 10px; color:var(--muted); font-size:.9rem; line-height:1.5}
+  .tocConto{
+    padding:10px 10px 4px; color:var(--muted); font-size:.78rem;
+    letter-spacing:.08em; text-transform:uppercase; font-weight:600;
+  }
+  #tocList mark{
+    background:color-mix(in srgb, var(--hl-edge) 42%, transparent);
+    color:inherit; border-radius:3px; padding:0 1px;
+  }
   .tocIt{
     display:flex; align-items:baseline; gap:12px;
     padding:12px 10px; border-radius:10px; cursor:pointer; font-size:.95rem;
@@ -284,7 +314,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.20</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.21</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -354,7 +384,7 @@
       </div>
       <select id="voiceSel" aria-label="Voce"></select>
       <button class="chip" id="sleepBtn" type="button" aria-label="Timer di spegnimento">🌙 Timer</button>
-      <button class="chip" id="tocBtn" type="button" aria-label="Indice dei capitoli">☰ Capitoli</button>
+      <button class="chip" id="tocBtn" type="button" aria-label="Indice del libro">☰ Indice</button>
       <button class="chip" id="opzBtn" type="button" aria-label="Aspetto e pronuncia">Aa</button>
     </div>
   </div>
@@ -399,10 +429,21 @@
 </div>
 
 <div id="toc" aria-hidden="true">
-  <div id="tocCard" role="dialog" aria-label="Indice dei capitoli">
+  <div id="tocCard" role="dialog" aria-label="Indice del libro">
     <div class="shHead">
-      <span>Capitoli</span>
+      <span>Indice</span>
       <button id="tocChiudi" class="shChiudi" type="button" aria-label="Chiudi l'indice">✕</button>
+    </div>
+    <div id="tocTools">
+      <div class="tocRiga">
+        <input id="cercaInp" type="search" placeholder="🔍 Cerca nel testo…" autocomplete="off" autocapitalize="off" aria-label="Cerca nel testo del libro">
+      </div>
+      <div class="tocRiga" id="pagRiga">
+        <label id="pagLab" for="pagInp">Vai a pagina</label>
+        <input id="pagInp" type="number" min="1" inputmode="numeric" aria-label="Numero di pagina">
+        <span id="pagTot"></span>
+        <button id="pagVai" type="button">Vai</button>
+      </div>
     </div>
     <div id="tocList"></div>
   </div>
@@ -1510,35 +1551,115 @@ $("pronAdd").addEventListener("click",()=>{
   riconsegna();
 });
 
-/* ============================== indice dei capitoli ============================== */
+/* ============================== indice: capitoli, pagine, ricerca ============================== */
 const tocEl=$("toc"), tocList=$("tocList");
 function tocChiudi(){tocEl.style.display="none";}
-$("tocBtn").addEventListener("click",()=>{
+function vaiAFrase(i){
+  tocChiudi();
+  if(playing){stopSpeech();speak(i);}
+  else setIndex(i,{scroll:true});
+}
+/* prima frase della pagina p: le pagine crescono con le frasi, ricerca binaria */
+function fraseDaPagina(p){
+  let lo=0,hi=sents.length-1,r=-1;
+  while(lo<=hi){
+    const m=(lo+hi)>>1;
+    if((sents[m].page||0)>=p){r=m;hi=m-1;}else lo=m+1;
+  }
+  return r<0?sents.length-1:r; // oltre l'ultima pagina scritta: vai in fondo
+}
+function tocRiga(i,cur){ // riga cliccabile della lista (capitolo o risultato di ricerca)
+  const d=document.createElement("div");
+  d.className="tocIt"+(cur?" cur":"");
+  d.setAttribute("role","button"); d.tabIndex=0;
+  const vai=()=>vaiAFrase(i);
+  d.addEventListener("click",vai);
+  d.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();vai();}});
+  return d;
+}
+function tocCapitoli(){ // la vista di riposo del pannello: l'indice dei capitoli
+  tocList.innerHTML="";
   if(!capitoli.length){
-    toast("In questo libro non ho riconosciuto capitoli: spostati con la barra o toccando una frase.",4500);
+    const d=document.createElement("div");
+    d.className="tocVuoto";
+    d.textContent="In questo libro non ho riconosciuto capitoli."
+      +(book&&book.numPages>1?" Puoi comunque saltare a una pagina o cercare una parola qui sopra.":" Puoi comunque cercare una parola qui sopra.");
+    tocList.appendChild(d);
     return;
   }
-  tocList.innerHTML="";
   let corrente=-1;
   capitoli.forEach((c,k)=>{if(c.i<=idx)corrente=k;});
   capitoli.forEach((c,k)=>{
-    const d=document.createElement("div");
-    d.className="tocIt"+(k===corrente?" cur":"");
-    d.setAttribute("role","button"); d.tabIndex=0;
+    const d=tocRiga(c.i,k===corrente);
     d.innerHTML='<span class="tocTit"></span>'+(c.page?'<span class="tocPg">pag. '+c.page+"</span>":"");
     d.querySelector(".tocTit").textContent=c.t;
-    const vai=()=>{
-      tocChiudi();
-      if(playing){stopSpeech();speak(c.i);}
-      else setIndex(c.i,{scroll:true});
-    };
-    d.addEventListener("click",vai);
-    d.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();vai();}});
     tocList.appendChild(d);
   });
-  tocEl.style.display="block";
   const cur=tocList.querySelector(".cur");
   if(cur)cur.scrollIntoView({block:"center"});
+}
+/* ricerca nel testo: accenti "appiattiti" carattere per carattere (la lunghezza
+   non cambia, così gli indici trovati valgono anche nel testo da evidenziare) */
+const ACCENTI={"à":"a","á":"a","â":"a","ä":"a","è":"e","é":"e","ê":"e","ë":"e","ì":"i","í":"i","î":"i","ï":"i","ò":"o","ó":"o","ô":"o","ö":"o","ù":"u","ú":"u","û":"u","ü":"u","ç":"c"};
+function piatta(s){return s.toLowerCase().replace(/[àáâäèéêëìíîïòóôöùúûüç]/g,c=>ACCENTI[c]||c);}
+function tocCerca(q){
+  q=q.trim();
+  if(q.length<2){tocCapitoli();return;}
+  const nq=piatta(q), MAX=80;
+  tocList.innerHTML="";
+  const conto=document.createElement("div");
+  conto.className="tocConto";
+  tocList.appendChild(conto);
+  let trovate=0;
+  for(let i=0;i<sents.length&&trovate<MAX;i++){
+    const t=sents[i].t, j=piatta(t).indexOf(nq);
+    if(j<0)continue;
+    trovate++;
+    const d=tocRiga(i,i===idx);
+    d.innerHTML='<span class="tocTit"></span>'+(sents[i].page?'<span class="tocPg">pag. '+sents[i].page+"</span>":"");
+    const tit=d.querySelector(".tocTit");
+    const ini=Math.max(0,j-28);
+    tit.append((ini>0?"…":"")+t.slice(ini,j));
+    const mk=document.createElement("mark");
+    mk.textContent=t.slice(j,j+q.length);
+    tit.appendChild(mk);
+    tit.append(t.slice(j+q.length,j+q.length+80)+(j+q.length+80<t.length?"…":""));
+    tocList.appendChild(d);
+  }
+  conto.textContent=trovate===0?"Nessun risultato per «"+q+"»"
+    :trovate>=MAX?"Primi "+MAX+" risultati per «"+q+"»"
+    :trovate+(trovate===1?" risultato":" risultati")+" per «"+q+"»";
+}
+let cercaTimer=0;
+$("cercaInp").addEventListener("input",()=>{
+  clearTimeout(cercaTimer);
+  cercaTimer=setTimeout(()=>tocCerca($("cercaInp").value),250);
+});
+$("cercaInp").addEventListener("keydown",e=>{
+  if(e.key==="Enter"){e.preventDefault();clearTimeout(cercaTimer);tocCerca($("cercaInp").value);}
+});
+function vaiPagina(){
+  const np=book&&book.numPages||0;
+  const p=Math.min(np,parseInt($("pagInp").value,10)||0);
+  if(p<1){toast("Scrivi un numero di pagina da 1 a "+np+".");return;}
+  vaiAFrase(fraseDaPagina(p));
+}
+$("pagVai").addEventListener("click",vaiPagina);
+$("pagInp").addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();vaiPagina();}});
+$("tocBtn").addEventListener("click",()=>{
+  if(!book)return;
+  const np=book.numPages||0;
+  $("pagRiga").style.display=np>1?"flex":"none";
+  if(np>1){
+    $("pagTot").textContent="di "+np;
+    $("pagInp").value="";
+    $("pagInp").max=np;
+    const s=sents[idx];
+    $("pagInp").placeholder=s&&s.page?s.page:"";
+  }
+  $("cercaInp").value="";
+  tocCapitoli();
+  tocEl.style.display="block";
 });
 $("tocChiudi").addEventListener("click",tocChiudi);
 tocEl.addEventListener("click",e=>{if(e.target===tocEl)tocChiudi();});
