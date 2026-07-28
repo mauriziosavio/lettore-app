@@ -109,12 +109,29 @@ public class LetturaServicePlugin extends Plugin {
             for (int i = 0; i < pagine.length; i++) pagine[i] = pg.getInt(i);
             int[] pause = new int[pa != null ? pa.length() : 0];
             for (int i = 0; i < pause.length; i++) pause[i] = pa.getInt(i);
+            // capitoli per l'indice sfogliabile di Android Auto: [{i, t, p}]
+            List<String> capT = new ArrayList<>();
+            int[] capI = new int[0], capP = new int[0];
+            try {
+                JSArray ca = call.getArray("capitoli");
+                if (ca != null) {
+                    capI = new int[ca.length()];
+                    capP = new int[ca.length()];
+                    for (int i = 0; i < ca.length(); i++) {
+                        org.json.JSONObject x = ca.getJSONObject(i);
+                        capT.add(x.optString("t", "Capitolo " + (i + 1)));
+                        capI[i] = x.optInt("i", 0);
+                        capP[i] = x.optInt("p", 0);
+                    }
+                }
+            } catch (Throwable ignored) { }
             ReadingService.caricaCoda(getContext(), frasi, pagine, pause,
                 call.getInt("da", 0),
                 call.getDouble("rate", 1.0).floatValue(),
                 call.getString("titolo", "Lettore"),
                 call.getInt("numPages", 0),
-                call.getString("chiave", ""));
+                call.getString("chiave", ""),
+                capT, capI, capP);
         } catch (Throwable ignored) { }
         call.resolve();
     }

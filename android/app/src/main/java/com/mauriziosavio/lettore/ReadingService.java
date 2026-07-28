@@ -4,8 +4,10 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.media.AudioAttributes;
@@ -26,6 +28,7 @@ import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
 
 import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
 import androidx.media.MediaBrowserServiceCompat;
 
 import java.util.ArrayList;
@@ -48,6 +51,7 @@ public class ReadingService extends MediaBrowserServiceCompat {
     private static final String CHANNEL_ID = "lettura";
     private static final int NOTIFICATION_ID = 1;
     private static final String RADICE = "radice";
+    private static final String CAPITOLI_ID = "capitoli";
     private static final String LIBRO_FILE = "libro.json";
     static final String AZ_PLAY = "com.mauriziosavio.lettore.PLAY";
     static final String AZ_PAUSE = "com.mauriziosavio.lettore.PAUSE";
@@ -66,6 +70,9 @@ public class ReadingService extends MediaBrowserServiceCompat {
     private static String qTitolo = "Lettore";
     private static int qNumPages;
     private static String qChiave = "";
+    private static List<String> qCapT;
+    private static int[] qCapI;
+    private static int[] qCapP;
     private static boolean qNuova = false;
 
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -94,15 +101,32 @@ public class ReadingService extends MediaBrowserServiceCompat {
     private long statInizio = 0;   // statistiche: da quando sta leggendo questa sessione
     private long parlaInizio = 0;  // quando è partita la frase corrente (smaschera gli onDone senza audio)
     private int frasiLampo = 0;    // frasi "finite" troppo in fretta di fila (voce in rete assente)
+    private boolean attesaFocus = false; // in pausa per focus rubato (telefonata/navigatore): riprende da solo
+    private List<String> capTitoli; // capitoli per il catalogo di Android Auto
+    private int[] capFrasi;
+    private int[] capPagine;
+
+    /* Scollegare Android Auto, il Bluetooth o le cuffie dirotta l'audio
+       sull'altoparlante del telefono: qualunque app multimediale deve fermarsi. */
+    private final BroadcastReceiver noisy = new BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) {
+            try {
+                if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(i.getAction())
+                        && (playing || attesaFocus)) main.post(ReadingService.this::pausa);
+            } catch (Throwable ignored) { }
+        }
+    };
 
     /* ============ API statiche usate dal plugin (stesso processo) ============ */
 
     static void caricaCoda(Context c, List<String> frasi, int[] pagine, int[] pause,
-                           int da, float rate, String titolo, int numPages, String chiave) {
+                           int da, float rate, String titolo, int numPages, String chiave,
+                           List<String> capT, int[] capI, int[] capP) {
         try {
             synchronized (ReadingService.class) {
                 qFrasi = frasi; qPagine = pagine; qPause = pause; qDa = da;
                 qRate = rate; qTitolo = titolo; qNumPages = numPages; qChiave = chiave;
+                qCapT = capT; qCapI = capI; qCapP = capP;
                 qNuova = true;
             }
             ReadingService s = instance;
@@ -204,7 +228,13 @@ public class ReadingService extends MediaBrowserServiceCompat {
                 @Override public void onSkipToNext() { main.post(() -> spostati(1)); }
                 @Override public void onSkipToPrevious() { main.post(() -> spostati(-1)); }
                 @Override public void onPlayFromMediaId(String mediaId, android.os.Bundle extras) {
-                    main.post(ReadingService.this::riprendi); // unico contenuto: il libro corrente
+                    int a = -1; // "riprendi" = segnalibro; "cap:N" = dalla frase N (indice capitoli di Auto)
+                    try {
+                        if (mediaId != null && mediaId.startsWith("cap:"))
+                            a = Integer.parseInt(mediaId.substring(4));
+                    } catch (Throwable ignored) { }
+                    final int da = a;
+                    main.post(() -> riprendi(da));
                 }
                 @Override public void onPlayFromSearch(String query, android.os.Bundle extras) {
                     main.post(ReadingService.this::riprendi); // "Ehi Google, riprendi la lettura"
@@ -222,6 +252,11 @@ public class ReadingService extends MediaBrowserServiceCompat {
             PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
             wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "lettore:lettura");
             wakeLock.setReferenceCounted(false);
+        } catch (Throwable ignored) { }
+        try {
+            ContextCompat.registerReceiver(this, noisy,
+                new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
+                ContextCompat.RECEIVER_NOT_EXPORTED);
         } catch (Throwable ignored) { }
         initTts();
     }
@@ -282,6 +317,7 @@ public class ReadingService extends MediaBrowserServiceCompat {
                 if (nuova) {
                     frasi = qFrasi; pagine = qPagine; pause = qPause; pos = Math.max(0, qDa);
                     rate = qRate; title = qTitolo; numPages = qNumPages; chiave = qChiave;
+                    capTitoli = qCapT; capFrasi = qCapI; capPagine = qCapP;
                     qNuova = false;
                 }
             }
@@ -289,10 +325,12 @@ public class ReadingService extends MediaBrowserServiceCompat {
                 gen++;
                 errori = 0;
                 frasiLampo = 0;
+                attesaFocus = false;
                 playing = true;
                 statParte();
                 salva();
-                salvaLibroSuDisco(frasi, pagine, pause, rate, title, numPages, chiave);
+                salvaLibroSuDisco(frasi, pagine, pause, rate, title, numPages, chiave,
+                    capTitoli, capFrasi, capPagine);
                 if (ttsPronto) parla();
                 else initTts();
                 LetturaServicePlugin.emit("stato", pos, true); // conferma subito l'icona ⏸ nel JS
@@ -316,6 +354,7 @@ public class ReadingService extends MediaBrowserServiceCompat {
             }
             parlaInizio = SystemClock.elapsedRealtime();
             armaGuardia(frase.length());
+            aggiornaMetadata(); // su Auto/orologio si vede la frase che sta leggendo
             if (pagineCorrente() != ultimaPagina) refresh();
         } catch (Throwable ignored) { }
     }
@@ -410,7 +449,13 @@ public class ReadingService extends MediaBrowserServiceCompat {
         } catch (Throwable ignored) { }
     }
 
+    /** Pausa voluta (utente, timer, scollegamento): niente ripresa automatica. */
     private void pausa() {
+        attesaFocus = false;
+        pausaInterna();
+    }
+
+    private void pausaInterna() {
         try {
             gen++;
             playing = false;
@@ -422,6 +467,28 @@ public class ReadingService extends MediaBrowserServiceCompat {
             refresh();
             LetturaServicePlugin.emit("stato", pos, false);
         } catch (Throwable ignored) { }
+    }
+
+    /** Il focus audio è la voce di Android che dice "ora parla un altro":
+     *  telefonata o navigatore (perdita transitoria) → pausa e riprendi da solo
+     *  quando finisce; un'altra app multimediale (perdita definitiva) → pausa
+     *  e basta. Prima questo listener era vuoto e il Lettore parlava sopra a tutto. */
+    private void focusCambiato(int f) {
+        main.post(() -> {
+            try {
+                if (f == AudioManager.AUDIOFOCUS_LOSS) {
+                    if (playing) pausa();
+                    else attesaFocus = false;
+                } else if (f == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
+                        || f == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) {
+                    /* la voce che legge non va "abbassata" (non si capirebbe): pausa,
+                       ma tenendo il focus prenotato così AUDIOFOCUS_GAIN ci risveglia */
+                    if (playing) { attesaFocus = true; pausaInterna(); }
+                } else if (f == AudioManager.AUDIOFOCUS_GAIN) {
+                    if (attesaFocus) { attesaFocus = false; salta(-1, 0, true); }
+                }
+            } catch (Throwable ignored) { }
+        });
     }
 
     /** Stop vero e proprio: come pausa, ma la notifica sparisce e il servizio muore. */
@@ -455,15 +522,18 @@ public class ReadingService extends MediaBrowserServiceCompat {
 
     /* ---- ripresa a freddo (Android Auto / notifica con app spenta) ---- */
 
+    private void riprendi() { riprendi(-1); }
+
     /** Play senza libro in memoria: se il JS non l'ha ancora consegnato,
-     *  lo ricarica da libro.json e riparte dal segnalibro salvato. */
-    private void riprendi() {
+     *  lo ricarica da libro.json e riparte dal segnalibro salvato.
+     *  a>=0 = riparti dalla frase a (salto di capitolo dall'indice di Auto). */
+    private void riprendi(int a) {
         try { // da bound (Auto) a servizio avviato: sopravvive quando Auto si scollega
             Intent i = new Intent(this, ReadingService.class);
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(i);
             else startService(i);
         } catch (Throwable ignored) { }
-        if (frasi != null) { salta(-1, 0, true); return; }
+        if (frasi != null) { salta(a, 0, true); return; }
         new Thread(() -> {
             try {
                 java.io.File f = new java.io.File(getFilesDir(), LIBRO_FILE);
@@ -489,12 +559,25 @@ public class ReadingService extends MediaBrowserServiceCompat {
                 final String t = o.optString("titolo", "Lettore");
                 final int npg = o.optInt("numPages", 0);
                 final String ch = o.optString("chiave", "");
+                org.json.JSONArray jc = o.optJSONArray("capitoli");
+                final List<String> ct = new ArrayList<>();
+                final int[] ci = new int[jc != null ? jc.length() : 0];
+                final int[] cpg = new int[ci.length];
+                for (int i = 0; i < ci.length; i++) {
+                    org.json.JSONObject x = jc.getJSONObject(i);
+                    ct.add(x.optString("t", "Capitolo " + (i + 1)));
+                    ci[i] = x.optInt("i", 0);
+                    cpg[i] = x.optInt("p", 0);
+                }
                 main.post(() -> {
-                    if (frasi != null) { salta(-1, 0, true); return; } // nel frattempo è arrivato dal JS
+                    if (frasi != null) { salta(a, 0, true); return; } // nel frattempo è arrivato dal JS
                     frasi = nf; pagine = np; pause = nu; rate = r;
                     title = t; numPages = npg; chiave = ch;
-                    int p = 0;
-                    try { p = getSharedPreferences("lettura", MODE_PRIVATE).getInt("pos", 0); } catch (Throwable ignored) { }
+                    if (!ct.isEmpty()) { capTitoli = ct; capFrasi = ci; capPagine = cpg; }
+                    int p = a;
+                    if (p < 0) {
+                        try { p = getSharedPreferences("lettura", MODE_PRIVATE).getInt("pos", 0); } catch (Throwable ignored) { p = 0; }
+                    }
                     pos = Math.max(0, Math.min(nf.size() - 1, p));
                     salta(-1, 0, true);
                 });
@@ -505,7 +588,8 @@ public class ReadingService extends MediaBrowserServiceCompat {
     /** Persiste l'intero libro (in un thread, sono anche megabyte) così la
      *  lettura può ripartire da Auto o dalla notifica ad app spenta. */
     private void salvaLibroSuDisco(final List<String> f, final int[] pg, final int[] pa,
-                                   final float r, final String t, final int np, final String ch) {
+                                   final float r, final String t, final int np, final String ch,
+                                   final List<String> ct, final int[] ci, final int[] cp) {
         new Thread(() -> {
             try {
                 org.json.JSONObject o = new org.json.JSONObject();
@@ -515,8 +599,21 @@ public class ReadingService extends MediaBrowserServiceCompat {
                 if (pg != null) for (int x : pg) apg.put(x);
                 org.json.JSONArray apa = new org.json.JSONArray();
                 if (pa != null) for (int x : pa) apa.put(x);
+                org.json.JSONArray ac = new org.json.JSONArray();
+                if (ct != null) for (int k = 0; k < ct.size(); k++) {
+                    org.json.JSONObject x = new org.json.JSONObject();
+                    x.put("t", ct.get(k));
+                    x.put("i", ci != null && k < ci.length ? ci[k] : 0);
+                    x.put("p", cp != null && k < cp.length ? cp[k] : 0);
+                    ac.put(x);
+                }
                 o.put("frasi", af); o.put("pagine", apg); o.put("pause", apa);
+                o.put("capitoli", ac);
                 o.put("rate", r); o.put("titolo", t); o.put("numPages", np); o.put("chiave", ch);
+                try { // copia leggera per il catalogo di Auto a servizio freddo
+                    getSharedPreferences("lettura", MODE_PRIVATE).edit()
+                        .putString("capitoli", ac.toString()).apply();
+                } catch (Throwable ignored) { }
                 java.io.File tmp = new java.io.File(getFilesDir(), LIBRO_FILE + ".tmp");
                 try (java.io.FileOutputStream out = new java.io.FileOutputStream(tmp)) {
                     out.write(o.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -534,10 +631,49 @@ public class ReadingService extends MediaBrowserServiceCompat {
         return new BrowserRoot(RADICE, null); // nessun contenuto sensibile: catalogo aperto
     }
 
+    /** A servizio appena nato (bind di Auto) i capitoli arrivano dalla copia nelle prefs. */
+    private void caricaCapitoliDaPrefs() {
+        try {
+            if (capTitoli != null) return;
+            String s = getSharedPreferences("lettura", MODE_PRIVATE).getString("capitoli", "");
+            if (s == null || s.isEmpty()) return;
+            org.json.JSONArray jc = new org.json.JSONArray(s);
+            if (jc.length() == 0) return;
+            List<String> ct = new ArrayList<>(jc.length());
+            int[] ci = new int[jc.length()];
+            int[] cp = new int[jc.length()];
+            for (int i = 0; i < jc.length(); i++) {
+                org.json.JSONObject x = jc.getJSONObject(i);
+                ct.add(x.optString("t", "Capitolo " + (i + 1)));
+                ci[i] = x.optInt("i", 0);
+                cp[i] = x.optInt("p", 0);
+            }
+            capTitoli = ct; capFrasi = ci; capPagine = cp;
+        } catch (Throwable ignored) { }
+    }
+
     @Override
     public void onLoadChildren(String parentId, Result<List<MediaBrowserCompat.MediaItem>> result) {
         List<MediaBrowserCompat.MediaItem> items = new ArrayList<>();
         try {
+            if (CAPITOLI_ID.equals(parentId)) {
+                // l'indice del libro, sfogliabile dallo schermo dell'auto
+                caricaCapitoliDaPrefs();
+                if (capTitoli != null) {
+                    for (int k = 0; k < capTitoli.size(); k++) {
+                        int fi = capFrasi != null && k < capFrasi.length ? capFrasi[k] : 0;
+                        int pg = capPagine != null && k < capPagine.length ? capPagine[k] : 0;
+                        MediaDescriptionCompat d = new MediaDescriptionCompat.Builder()
+                            .setMediaId("cap:" + fi)
+                            .setTitle(capTitoli.get(k))
+                            .setSubtitle(pg > 0 ? "Pagina " + pg : null)
+                            .build();
+                        items.add(new MediaBrowserCompat.MediaItem(d, MediaBrowserCompat.MediaItem.FLAG_PLAYABLE));
+                    }
+                }
+                result.sendResult(items);
+                return;
+            }
             String t = title;
             int pg, np = numPages;
             SharedPreferences p = getSharedPreferences("lettura", MODE_PRIVATE);
@@ -559,6 +695,15 @@ public class ReadingService extends MediaBrowserServiceCompat {
                     .setSubtitle(sotto)
                     .build();
                 items.add(new MediaBrowserCompat.MediaItem(d, MediaBrowserCompat.MediaItem.FLAG_PLAYABLE));
+                caricaCapitoliDaPrefs();
+                if (capTitoli != null && !capTitoli.isEmpty()) {
+                    MediaDescriptionCompat dc = new MediaDescriptionCompat.Builder()
+                        .setMediaId(CAPITOLI_ID)
+                        .setTitle("Capitoli")
+                        .setSubtitle(capTitoli.size() + (capTitoli.size() == 1 ? " capitolo" : " capitoli"))
+                        .build();
+                    items.add(new MediaBrowserCompat.MediaItem(dc, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE));
+                }
             }
         } catch (Throwable ignored) { }
         result.sendResult(items);
@@ -593,6 +738,7 @@ public class ReadingService extends MediaBrowserServiceCompat {
             if (nuovoRate > 0) rate = nuovoRate;
             if (frasi != null && pos >= frasi.size()) pos = frasi.size() - 1;
             if (leggi || playing) {
+                attesaFocus = false; // riparte per volontà dell'utente: dimentica l'attesa
                 playing = true;
                 statParte();
                 if (tts != null) tts.stop();
@@ -662,6 +808,31 @@ public class ReadingService extends MediaBrowserServiceCompat {
         return PendingIntent.getService(this, rc, i, PendingIntent.FLAG_IMMUTABLE);
     }
 
+    /** Sullo schermo di Android Auto (e sull'orologio) la riga grande è il titolo
+     *  della sessione: mentre legge ci mettiamo la FRASE pronunciata — il "testo
+     *  che scorre" più vicino al telefono che i template di Auto permettano.
+     *  La notifica sul telefono non cambia: usa i testi suoi, non questi. */
+    private void aggiornaMetadata() {
+        try {
+            if (session == null) return;
+            int pg = pagineCorrente();
+            String dove = pg > 0 ? "Pagina " + pg + (numPages > 0 ? " di " + numPages : "") : "";
+            String riga1 = title;
+            String riga2 = dove.isEmpty() ? (playing ? "Lettura in corso" : "In pausa") : dove;
+            if (playing && frasi != null && pos >= 0 && pos < frasi.size()) {
+                String fr = frasi.get(pos);
+                if (fr.length() > 160) fr = fr.substring(0, 157) + "…";
+                riga1 = fr;
+                riga2 = title + (dove.isEmpty() ? "" : " · " + dove);
+            }
+            session.setMetadata(new MediaMetadataCompat.Builder()
+                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, riga1)
+                .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, riga2)
+                .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, title)
+                .build());
+        } catch (Throwable ignored) { }
+    }
+
     private void refresh() {
         String sub;
         int pg = pagineCorrente();
@@ -670,10 +841,7 @@ public class ReadingService extends MediaBrowserServiceCompat {
         else sub = playing ? "Lettura in corso" : "In pausa";
         try {
             if (session != null) {
-                session.setMetadata(new MediaMetadataCompat.Builder()
-                    .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
-                    .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, sub)
-                    .build());
+                aggiornaMetadata();
                 session.setPlaybackState(new PlaybackStateCompat.Builder()
                     .setActions(PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE
                         | PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_STOP
@@ -757,10 +925,13 @@ public class ReadingService extends MediaBrowserServiceCompat {
                             .setAudioAttributes(new AudioAttributes.Builder()
                                 .setUsage(AudioAttributes.USAGE_MEDIA)
                                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
-                            .setOnAudioFocusChangeListener(f -> { }).build();
+                            /* il parlato non si "abbassa": meglio la pausa vera */
+                            .setWillPauseWhenDucked(true)
+                            .setOnAudioFocusChangeListener(this::focusCambiato).build();
                     }
                     am.requestAudioFocus(afr);
-                } else if (afr != null) {
+                } else if (afr != null && !attesaFocus) {
+                    // in attesaFocus il focus resta prenotato: è il GAIN a risvegliarci
                     am.abandonAudioFocusRequest(afr);
                 }
             }
@@ -778,6 +949,7 @@ public class ReadingService extends MediaBrowserServiceCompat {
     @Override
     public void onDestroy() {
         instance = null;
+        try { unregisterReceiver(noisy); } catch (Throwable ignored) { }
         try { statFerma(); } catch (Throwable ignored) { }
         try { main.removeCallbacks(timerRun); main.removeCallbacks(guardia); } catch (Throwable ignored) { }
         try { if (tts != null) { tts.stop(); tts.shutdown(); tts = null; } } catch (Throwable ignored) { }

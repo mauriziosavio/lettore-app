@@ -284,7 +284,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.19</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.20</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -613,6 +613,8 @@ if(CAP){ /* nell'APK le voci sono quelle del TTS di Android: le chiediamo al plu
         toast("Questa voce non riesce a leggere (forse le serve internet): torno alla voce di sistema.",6500);
       }else if(d.azione==="stato"){
         playing=!!d.playing; updatePlayBtn();
+        /* un salto di capitolo comandato da Android Auto arriva qui: segui il libro */
+        if(book&&typeof d.i==="number"&&d.i>=0&&d.i<sents.length&&d.i!==idx)setIndex(d.i);
         if(!playing)ripristinaParola();
         /* se la pausa arriva allo scadere del timer, spegni anche il chip 🌙 */
         if(!playing&&sleepAt&&Date.now()>=sleepAt-2000){sleepAt=0;sleepChip();toast("⏰ Timer: lettura in pausa. Buonanotte!");}
@@ -1256,7 +1258,9 @@ function setPlaying(on){
           da:idx, rate:rate,
           titolo:book?book.name:"Lettore",
           numPages:book&&book.numPages?book.numPages:0,
-          chiave:book?book.key:""
+          chiave:book?book.key:"",
+          /* l'indice del libro finisce nel catalogo di Android Auto */
+          capitoli:capitoli.map(c=>({i:c.i,t:c.t,p:c.page||0}))
         }).catch(()=>{});
         /* se il timer 🌙 era già impostato, ricordalo al servizio appena (ri)nato */
         if(sleepAt>Date.now())CAP.LetturaService.timer({minuti:(sleepAt-Date.now())/60000}).catch(()=>{});
