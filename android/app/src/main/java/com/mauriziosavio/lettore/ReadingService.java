@@ -804,6 +804,8 @@ public class ReadingService extends MediaBrowserServiceCompat {
                 String sotto = pg > 0
                     ? "Riprendi da pagina " + pg + (np > 0 ? " di " + np : "")
                     : "Riprendi la lettura";
+                String capR = capitoloPer(frasi != null ? pos : p.getInt("pos", 0));
+                if (capR != null) sotto += " · " + capR;
                 MediaDescriptionCompat.Builder db = new MediaDescriptionCompat.Builder()
                     .setMediaId("riprendi")
                     .setTitle(t)
@@ -925,6 +927,24 @@ public class ReadingService extends MediaBrowserServiceCompat {
         return (pagine != null && pos >= 0 && pos < pagine.length) ? pagine[pos] : 0;
     }
 
+    /** Titolo del capitolo in cui cade la frase p (null se il libro non ne ha). */
+    private String capitoloPer(int p) {
+        try {
+            caricaCapitoliDaPrefs();
+            if (capTitoli == null || capFrasi == null || capTitoli.isEmpty()) return null;
+            int k = -1;
+            for (int i = 0; i < capFrasi.length && i < capTitoli.size(); i++) {
+                if (capFrasi[i] <= p) k = i; else break;
+            }
+            if (k < 0) return null;
+            String t = capTitoli.get(k);
+            if (t == null || t.trim().isEmpty()) return null;
+            return t.length() > 60 ? t.substring(0, 57) + "…" : t;
+        } catch (Throwable ignored) { return null; }
+    }
+
+    private String capitoloCorrente() { return capitoloPer(pos); }
+
     /* ============ notifica / mini-lettore ============ */
 
     private PendingIntent azione(String az, int rc) {
@@ -1002,6 +1022,8 @@ public class ReadingService extends MediaBrowserServiceCompat {
             if (session == null) return;
             int pg = pagineCorrente();
             String dove = pg > 0 ? "Pagina " + pg + (numPages > 0 ? " di " + numPages : "") : "";
+            String cap = capitoloCorrente(); // il capitolo accanto alla pagina, su Auto e orologio
+            if (cap != null) dove = dove.isEmpty() ? cap : dove + " · " + cap;
             String riga1 = title;
             String riga2 = dove.isEmpty() ? (playing ? "Lettura in corso" : "In pausa") : dove;
             if (playing && frasi != null && pos >= 0 && pos < frasi.size()) {
@@ -1035,6 +1057,8 @@ public class ReadingService extends MediaBrowserServiceCompat {
         ultimaPagina = pg;
         if (pg > 0) sub = "Pagina " + pg + (numPages > 0 ? " di " + numPages : "");
         else sub = playing ? "Lettura in corso" : "In pausa";
+        String capNot = capitoloCorrente(); // anche la notifica dice in che capitolo siamo
+        if (capNot != null) sub = sub + " · " + capNot;
         try {
             if (session != null) {
                 aggiornaMetadata();

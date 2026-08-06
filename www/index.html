@@ -223,6 +223,12 @@
     box-shadow:0 1px 4px rgba(0,0,0,.3);
   }
   .meta{display:flex; justify-content:space-between; font-size:.78rem; color:var(--muted); font-variant-numeric:tabular-nums; margin-top:-6px}
+  #capRiga{
+    display:none; align-items:center; gap:7px; max-width:100%;
+    margin:0 0 2px; font-size:.8rem; color:var(--muted); cursor:pointer;
+  }
+  #capRiga:hover #capLbl{color:var(--ink)}
+  #capLbl{overflow:hidden; white-space:nowrap; text-overflow:ellipsis}
   .ctrls{display:flex; align-items:center; justify-content:center; gap:22px}
   #stopBtn{color:var(--muted)}
   .ctrls button{
@@ -339,7 +345,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.23</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.24</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -381,6 +387,9 @@
 
 <footer id="player">
   <div class="pwrap">
+    <div id="capRiga" role="button" tabindex="0" aria-label="Capitolo corrente — apri l'indice">
+      <span aria-hidden="true">☰</span><span id="capLbl"></span>
+    </div>
     <div id="bar" role="slider" aria-label="Posizione nel libro" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0">
       <div id="barTrack"><div id="barFill"></div><div id="barKnob"></div></div>
     </div>
@@ -543,6 +552,7 @@ const landing=$("landing"), busy=$("busy"), busyMsg=$("busyMsg"), reader=$("read
       player=$("player"), bookTitle=$("bookTitle"),
       barEl=$("bar"), barFill=$("barFill"), barKnob=$("barKnob"),
       pctLbl=$("pctLbl"), pageLbl=$("pageLbl"), etaLbl=$("etaLbl"),
+      capRiga=$("capRiga"), capLbl=$("capLbl"),
       playBtn=$("playBtn"), icoPlay=$("icoPlay"), icoPause=$("icoPause"),
       voiceSel=$("voiceSel"), fileInput=$("fileInput"), toastEl=$("toast");
 
@@ -1040,12 +1050,18 @@ async function extractEpub(buf,onProg){
       const t=(el.textContent||"").replace(/\s+/g," ").trim();
       if(!t)continue;
       const head=/^H[1-3]$/.test(el.tagName);
+      let testa=t;
       if(prima&&!head){ // capitolo senza intestazione: usa il titolo dell'indice
         const tit=tocTitoli.get(percorso);
         if(tit&&piatta(tit)!==piatta(t).slice(0,tit.length))pars.push({text:tit,page:null,head:true});
+      }else if(prima&&head){
+        /* intestazione "Capitolo 1" e basta, ma l'indice del libro ha il nome
+           completo ("Capitolo 1 — Il ritorno"): meglio quello, anche a video */
+        const tit=tocTitoli.get(percorso);
+        if(tit&&tit.length>t.length&&piatta(tit).startsWith(piatta(t)))testa=tit;
       }
       prima=false;
-      pars.push({text:t,page:null,head});
+      pars.push({text:testa,page:null,head});
     }
     if(onProg)onProg(ci+1,spine.length);
     if(ci%5===4)await new Promise(r=>setTimeout(r,0));
@@ -1418,7 +1434,7 @@ function renderBook(){
       pars.push({text:par.text,page:par.page,head:head});
     }
   }
-  const html=[]; let lastPage=null, si=0;
+  const html=[]; let lastPage=null, si=0, headPrec=false;
   pars.forEach((par,pi)=>{
     if(par.page!==null&&par.page!==lastPage){
       html.push('<div class="pgbrk" aria-hidden="true">Pagina '+par.page+"</div>");
@@ -1427,11 +1443,16 @@ function renderBook(){
     /* le righe di soli simboli (es. i separatori «* * *») non si leggono: via */
     const pieces=splitSentences(par.text).filter(t=>/[A-Za-zÀ-ÿ0-9]/.test(t));
     if(!pieces.length)return;
-    if(par.head)capitoli.push({
-      i:si,
-      t:par.text.length>72?par.text.slice(0,69)+"…":par.text,
-      page:par.page,
-    });
+    if(par.head){
+      /* "Capitolo 1" e il suo nome sono spesso due righe-titolo consecutive:
+         nell'indice (e su Android Auto) devono essere UNA voce col nome intero */
+      const tit=par.text.length>72?par.text.slice(0,69)+"…":par.text;
+      const prev=headPrec?capitoli[capitoli.length-1]:null;
+      if(prev&&piatta(prev.t).includes(piatta(tit))){/* nome già nel titolo (dall'indice EPUB) */}
+      else if(prev&&(prev.t+" — "+tit).length<=90)prev.t+=" — "+tit;
+      else capitoli.push({i:si,t:tit,page:par.page});
+    }
+    headPrec=!!par.head;
     const inner=pieces.map(t=>{
       sents.push({t,par:pi,page:par.page,head:!!par.head});
       return '<span class="s" data-i="'+(si++)+'">'+esc(t)+"</span>";
@@ -1581,6 +1602,7 @@ function setIndex(i,opts){
   pctLbl.textContent=Math.round(frac*100)+"%";
   const s=sents[idx];
   pageLbl.textContent=s&&s.page?("Pag. "+s.page+(book.numPages?" di "+book.numPages:"")):("Frase "+(idx+1)+" di "+sents.length);
+  capAggiorna();
   const ora=Date.now(); // frase completata in lettura → misura la velocità reale della voce
   if(playing&&setIndex._last===i-1&&setIndex._lastT){
     etaCalibra(sents[i-1]&&sents[i-1].t,ora-setIndex._lastT);
@@ -1592,6 +1614,23 @@ function setIndex(i,opts){
   /* da fermo, comunica al motore nativo lo spostamento manuale del segnalibro
      (mentre legge ci pensa speak→salta; gli echi degli eventi "pos" sono innocui) */
   if(CAP&&!playing&&setPlaying._srv){try{CAP.LetturaService.salta({a:idx,leggi:false}).catch(()=>{});}catch(e){}}
+}
+
+/* La riga sopra la barra del player: in che capitolo siamo, col suo nome.
+   Se il titolo del libro non porta già un numero ("Il ritorno"), davanti va
+   "Cap. N ·" così si sa anche a che punto dell'indice si è arrivati. */
+function capAggiorna(){
+  if(!capitoli.length){capRiga.style.display="none";return;}
+  let k=-1,lo=0,hi=capitoli.length-1;
+  while(lo<=hi){const m=(lo+hi)>>1;if(capitoli[m].i<=idx){k=m;lo=m+1;}else hi=m-1;}
+  capRiga.style.display="flex";
+  if(k<0){capLbl.textContent="Inizio · "+capitoli.length+(capitoli.length===1?" capitolo":" capitoli");return;}
+  const t=capitoli[k].t;
+  /* il romano conta solo da solo o con punteggiatura dopo ("XII", "XII — …"):
+     "L’ARRIVO" o "IL VIAGGIO" sono parole, e il numero glielo mettiamo noi */
+  const haNumero=/^\s*(capitolo|cap\.|parte|libro|sezione|prologo|epilogo|introduzione|prefazione|premessa|conclusione|appendice|atto|scena)\b/i.test(t)
+    ||/^\s*\d/.test(t)||/^\s*[IVXLCDM]{1,7}\s*([.·:–—-]|$)/.test(t);
+  capLbl.textContent=(haNumero?"":"Cap. "+(k+1)+" · ")+t;
 }
 
 /* Con content-visibility:auto le altezze dei paragrafi lontani sono solo stimate:
@@ -2041,7 +2080,7 @@ function vaiPagina(){
 }
 $("pagVai").addEventListener("click",vaiPagina);
 $("pagInp").addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();vaiPagina();}});
-$("tocBtn").addEventListener("click",()=>{
+function apriIndice(){
   if(!book)return;
   const np=book.numPages||0;
   $("pagRiga").style.display=np>1?"flex":"none";
@@ -2055,7 +2094,10 @@ $("tocBtn").addEventListener("click",()=>{
   $("cercaInp").value="";
   tocCapitoli();
   tocEl.style.display="block";
-});
+}
+$("tocBtn").addEventListener("click",apriIndice);
+capRiga.addEventListener("click",apriIndice);
+capRiga.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();apriIndice();}});
 $("tocChiudi").addEventListener("click",tocChiudi);
 tocEl.addEventListener("click",e=>{if(e.target===tocEl)tocChiudi();});
 document.addEventListener("keydown",e=>{if(e.key==="Escape"){tocChiudi();opzChiudi();}});
