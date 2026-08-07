@@ -345,7 +345,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.25</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.26</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -824,8 +824,11 @@ async function extractPdf(data,onProg){
     const lines=[];
     for(const r of runs){
       const L=lines[lines.length-1];
-      if(L&&Math.abs(L.y-r.y)<Math.max(2.5,Math.min(L.h,r.h)*0.6))L.runs.push(r);
-      else lines.push({y:r.y,runs:[r]});
+      /* L.h va tenuto aggiornato QUI: senza, il confronto era con NaN e i pezzi
+         sulla stessa riga ("CAPITOLO" + "2") restavano righe separate — e il
+         numero, solo in cima alla pagina, spariva col filtro anti-rumore */
+      if(L&&Math.abs(L.y-r.y)<Math.max(2.5,Math.min(L.h,r.h)*0.6)){L.runs.push(r);if(r.h>L.h)L.h=r.h;}
+      else lines.push({y:r.y,h:r.h,runs:[r]});
     }
     for(const L of lines){
       L.runs.sort((a,b)=>a.x-b.x);
@@ -1436,6 +1439,22 @@ function nomeDopo(par){
   if(t.split(/\s+/).length>8)return null;
   return t;
 }
+/* La riga-etichetta SOPRA il titolo grande ("CAPITOLO 1", "PROLOGO", "II"):
+   nei PDF spesso è in carattere normale, ma nell'indice va col nome. */
+function etichetta(par){
+  if(!par||par.head)return null;
+  const t=par.text.trim();
+  if(t.length>30)return null;
+  if(generico(t))return t;
+  if(/^(prologo|epilogo|interludio|intermezzo|prefazione|introduzione|premessa|appendice|conclusione)$/i.test(t))return t;
+  return null;
+}
+/* Il frontespizio: un titolo in grande che ripete il nome del libro
+   non è un capitolo e non deve stare nell'indice. */
+function titoloDelLibro(t){
+  const a=piatta(t).replace(/[^a-z0-9]/g,""), b=piatta(book&&book.name||"").replace(/[^a-z0-9]/g,"");
+  return a.length>=10&&b.length>=10&&(b.includes(a)||a.includes(b));
+}
 function renderBook(){
   sents=[]; spans=[]; capitoli=[];
   /* L'estrazione (soprattutto dai PDF) a volte spezza un capoverso a metà frase:
@@ -1464,7 +1483,7 @@ function renderBook(){
     if(pg>=2)book.numPages=pg;
     else pars.forEach(p=>{p.page=null;});
   }
-  const html=[]; let lastPage=null, si=0, headPrec=false;
+  const html=[]; let lastPage=null, si=0, headPrec=false, capSoppresso=false, parPrec=null, siPrec=0;
   pars.forEach((par,pi)=>{
     if(par.page!==null&&par.page!==lastPage){
       html.push('<div class="pgbrk" aria-hidden="true">Pagina '+par.page+"</div>");
@@ -1473,19 +1492,27 @@ function renderBook(){
     /* le righe di soli simboli (es. i separatori «* * *») non si leggono: via */
     const pieces=splitSentences(par.text).filter(t=>/[A-Za-zÀ-ÿ0-9]/.test(t));
     if(!pieces.length)return;
+    const siQui=si;
     if(par.head){
       /* "Capitolo 1" e il suo nome sono spesso due righe-titolo consecutive:
          nell'indice (e su Android Auto) devono essere UNA voce col nome intero */
       let tit=par.text.length>72?par.text.slice(0,69)+"…":par.text;
       const prev=headPrec?capitoli[capitoli.length-1]:null;
-      if(prev&&piatta(prev.t).includes(piatta(tit))){/* nome già nel titolo (dall'indice EPUB) */}
-      else if(prev&&(prev.t+" — "+tit).length<=90)prev.t+=" — "+tit;
+      if(titoloDelLibro(par.text)&&(par.page==null||par.page<=2))capSoppresso=true;
+      else if(headPrec&&capSoppresso&&!generico(par.text)){/* seguito del frontespizio (autore, sottotitolo) */}
+      else if(prev&&piatta(prev.t).includes(piatta(tit))){/* nome già nel titolo (dall'indice EPUB) */}
+      else if(prev&&(prev.t+" — "+tit).length<=90){capSoppresso=false;prev.t+=" — "+tit;}
       else{
+        capSoppresso=false;
         /* etichetta spoglia e il nome sulla riga sotto, non riconosciuta come
            intestazione: l'indice (e Auto) deve dire "Capitolo 3 — Il nome" */
         const nome=generico(par.text)?nomeDopo(pars[pi+1]):null;
         if(nome&&(tit+" — "+nome).length<=90)tit+=" — "+nome;
-        capitoli.push({i:si,t:tit,page:par.page});
+        /* etichetta sulla riga SOPRA il titolo ("CAPITOLO 1", "PROLOGO"):
+           entra nella voce, e il salto parte da lì così la voce la legge */
+        const et=etichetta(parPrec); let ei=si;
+        if(et&&(et+" — "+tit).length<=90){tit=et+" — "+tit;ei=siPrec;}
+        capitoli.push({i:ei,t:tit,page:par.page});
       }
     }
     headPrec=!!par.head;
@@ -1494,6 +1521,7 @@ function renderBook(){
       return '<span class="s" data-i="'+(si++)+'">'+esc(t)+"</span>";
     }).join(" ");
     html.push('<p class="serif'+(par.head?" head":"")+'">'+inner+"</p>");
+    parPrec=par; siPrec=siQui;
   });
   reader.innerHTML=html.join("");
   spans=Array.from(reader.querySelectorAll("span.s"));
