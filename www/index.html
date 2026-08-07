@@ -345,7 +345,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.24</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.25</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -1418,6 +1418,24 @@ function rilevaTitolo(t){
   if(lettere.length>=3&&lettere===lettere.toUpperCase()&&t.length<=60)return true;
   return false;
 }
+/* "Capitolo 3", "Parte seconda", "XII." — un'etichetta senza nome */
+function generico(t){
+  t=t.trim();
+  return /^(capitolo|cap\.|parte|libro|sezione|atto|scena)(\s+\S{1,14})?\s*[.·:–—-]?$/i.test(t)
+    ||/^[IVXLCDM]{1,7}\s*[.·:–—-]?$/.test(t)||/^\d{1,4}\s*[.·:–—-]?$/.test(t);
+}
+/* La riga sotto "Capitolo N": se sembra un titolo (corta, iniziale maiuscola,
+   niente punteggiatura da frase) è il nome del capitolo, anche quando
+   l'estrazione non l'ha riconosciuta come intestazione. */
+function nomeDopo(par){
+  if(!par||par.head)return null;
+  const t=par.text.trim();
+  if(t.length<3||t.length>60)return null;
+  if(/^[a-zà-ú«»""]/.test(t))return null;
+  if(/[.!?…;«»""]/.test(t))return null;
+  if(t.split(/\s+/).length>8)return null;
+  return t;
+}
 function renderBook(){
   sents=[]; spans=[]; capitoli=[];
   /* L'estrazione (soprattutto dai PDF) a volte spezza un capoverso a metà frase:
@@ -1434,6 +1452,18 @@ function renderBook(){
       pars.push({text:par.text,page:par.page,head:head});
     }
   }
+  /* Libri senza pagine vere (EPUB, DOCX, TXT): pagine "di lettura" da ~1600
+     caratteri, così player, indice, Auto e notifica dicono comunque dove sei
+     invece di "Frase X di Y". Sotto le due pagine non ne vale la pena. */
+  if(!pars.some(p=>p.page!=null)&&pars.length){
+    const PAGCH=1600; let acc=PAGCH, pg=0;
+    for(const p of pars){
+      if(acc>=PAGCH){pg++; acc=0;}
+      p.page=pg; acc+=p.text.length+1;
+    }
+    if(pg>=2)book.numPages=pg;
+    else pars.forEach(p=>{p.page=null;});
+  }
   const html=[]; let lastPage=null, si=0, headPrec=false;
   pars.forEach((par,pi)=>{
     if(par.page!==null&&par.page!==lastPage){
@@ -1446,11 +1476,17 @@ function renderBook(){
     if(par.head){
       /* "Capitolo 1" e il suo nome sono spesso due righe-titolo consecutive:
          nell'indice (e su Android Auto) devono essere UNA voce col nome intero */
-      const tit=par.text.length>72?par.text.slice(0,69)+"…":par.text;
+      let tit=par.text.length>72?par.text.slice(0,69)+"…":par.text;
       const prev=headPrec?capitoli[capitoli.length-1]:null;
       if(prev&&piatta(prev.t).includes(piatta(tit))){/* nome già nel titolo (dall'indice EPUB) */}
       else if(prev&&(prev.t+" — "+tit).length<=90)prev.t+=" — "+tit;
-      else capitoli.push({i:si,t:tit,page:par.page});
+      else{
+        /* etichetta spoglia e il nome sulla riga sotto, non riconosciuta come
+           intestazione: l'indice (e Auto) deve dire "Capitolo 3 — Il nome" */
+        const nome=generico(par.text)?nomeDopo(pars[pi+1]):null;
+        if(nome&&(tit+" — "+nome).length<=90)tit+=" — "+nome;
+        capitoli.push({i:si,t:tit,page:par.page});
+      }
     }
     headPrec=!!par.head;
     const inner=pieces.map(t=>{
