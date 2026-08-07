@@ -351,7 +351,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.28</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.29</span></div>
   <div id="bookTitle"></div>
 </header>
 
@@ -934,9 +934,64 @@ async function extractPdf(data,onProg){
   return {pars,numPages:pdf.numPages,cover};
 }
 async function extractDocx(arrayBuffer){
-  const res=await mammoth.extractRawText({arrayBuffer});
-  const pars=res.value.split(/\n+/).map(s=>s.trim()).filter(Boolean).map(text=>({text,page:null}));
-  return {pars,numPages:null};
+  /* Il DOCX è uno ZIP: leggendo word/document.xml direttamente i titoli si
+     riconoscono dal corpo del carattere (w:sz) o dagli stili "Titolo", come
+     nei PDF — molti libri Word non usano gli stili ma solo caratteri più
+     grandi. Se di titoli così non ce ne sono, il documento è "piatto" e
+     decide rilevaTitolo come prima; mammoth resta il ripiego totale. */
+  try{
+    const z=await unzipTutto(arrayBuffer);
+    const doc=new DOMParser().parseFromString(
+      decodificaXml((await zipFile(z,"word/document.xml")).slice().buffer),"application/xml");
+    if(doc.getElementsByTagName("parsererror").length)throw new Error("XML non valido");
+    let base=22; // corpo predefinito del documento, in mezzi punti
+    try{
+      const sd=new DOMParser().parseFromString(
+        decodificaXml((await zipFile(z,"word/styles.xml")).slice().buffer),"application/xml");
+      const dd=sd.getElementsByTagName("w:docDefaults")[0];
+      const s=dd&&dd.getElementsByTagName("w:sz")[0];
+      const v=s&&parseInt(s.getAttribute("w:val"),10);
+      if(v>=12&&v<=40)base=v;
+    }catch(e){}
+    const grezzi=[];
+    for(const p of doc.getElementsByTagName("w:p")){
+      let text="";
+      for(const el of p.getElementsByTagName("*")){
+        const ln=el.localName;
+        if(ln==="t")text+=el.textContent;
+        else if(ln==="tab"||ln==="br"||ln==="cr")text+=" ";
+      }
+      text=text.replace(/\s+/g," ").trim();
+      if(!text)continue;
+      let sz=0;
+      for(const s of p.getElementsByTagName("w:sz")){
+        const v=parseInt(s.getAttribute("w:val"),10);
+        if(v>sz)sz=v;
+      }
+      const ps=p.getElementsByTagName("w:pStyle")[0];
+      const hstile=!!(ps&&/^(heading|titolo|title)/i.test(ps.getAttribute("w:val")||""));
+      grezzi.push({text,sz,hstile});
+    }
+    if(grezzi.length<3)throw new Error("documento vuoto o quasi");
+    /* corpo tipico: la taglia più frequente tra i paragrafi lunghi — chi non
+       dichiara la taglia usa quella predefinita, e va contato con quella
+       (in un romanzo il corpo è quasi tutto "senza taglia": solo colophon,
+       dediche e citazioni la dichiarano, e non devono fare da metro) */
+    const conta=new Map();
+    for(const g of grezzi)if(g.text.length>25)conta.set(g.sz||base,(conta.get(g.sz||base)||0)+1);
+    let corpo=base,meglio=0;
+    conta.forEach((n,v)=>{if(n>meglio){meglio=n;corpo=v;}});
+    const pars=grezzi.map(g=>({
+      text:g.text,page:null,
+      head:g.hstile||(g.sz>corpo*1.15&&g.text.length<90),
+    }));
+    if(pars.filter(p=>p.head).length<3)pars.forEach(p=>{delete p.head;});
+    return {pars,numPages:null};
+  }catch(e){
+    const res=await mammoth.extractRawText({arrayBuffer});
+    const pars=res.value.split(/\n+/).map(s=>s.trim()).filter(Boolean).map(text=>({text,page:null}));
+    return {pars,numPages:null};
+  }
 }
 function extractTxt(text){
   const pars=text.split(/\r?\n\s*\r?\n|\r?\n/).map(s=>s.trim()).filter(Boolean).map(t=>({text:t,page:null}));
@@ -1500,7 +1555,7 @@ function renderBook(){
     if(pg>=2)book.numPages=pg;
     else pars.forEach(p=>{p.page=null;});
   }
-  const html=[]; let lastPage=null, si=0, headPrec=false, capSoppresso=false, parPrec=null, siPrec=0;
+  const html=[]; let lastPage=null, si=0, headPrec=false, capSoppresso=false, parPrec=null, siPrec=0, vistoCorpo=false;
   pars.forEach((par,pi)=>{
     if(par.page!==null&&par.page!==lastPage){
       html.push('<div class="pgbrk" aria-hidden="true">Pagina '+par.page+"</div>");
@@ -1515,7 +1570,9 @@ function renderBook(){
          nell'indice (e su Android Auto) devono essere UNA voce col nome intero */
       let tit=par.text.length>110?par.text.slice(0,107)+"…":par.text;
       const prev=headPrec?capitoli[capitoli.length-1]:null;
-      if(titoloDelLibro(par.text)&&(par.page==null||par.page<=2))capSoppresso=true;
+      /* il frontespizio sta PRIMA di qualsiasi testo normale: un titolo che
+         ripete il nome del libro più avanti (es. il prologo) è un capitolo */
+      if(titoloDelLibro(par.text)&&!vistoCorpo)capSoppresso=true;
       else if(headPrec&&capSoppresso&&!generico(par.text)){/* seguito del frontespizio (autore, sottotitolo) */}
       else if(prev&&piatta(prev.t).includes(piatta(tit))){/* nome già nel titolo (dall'indice EPUB) */}
       else if(prev&&(prev.t+" — "+tit).length<=110){capSoppresso=false;prev.t+=" — "+tit;}
@@ -1533,6 +1590,7 @@ function renderBook(){
       }
     }
     headPrec=!!par.head;
+    if(!par.head)vistoCorpo=true;
     const inner=pieces.map(t=>{
       sents.push({t,par:pi,page:par.page,head:!!par.head});
       return '<span class="s" data-i="'+(si++)+'">'+esc(t)+"</span>";
