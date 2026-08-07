@@ -65,8 +65,10 @@
   .wordmark{cursor:pointer;-webkit-tap-highlight-color:transparent}
   #bookTitle{
     flex:1; min-width:0; text-align:center;
-    font-size:.82rem; color:var(--muted);
-    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    font-size:.82rem; color:var(--muted); line-height:1.25;
+    /* due righe sui telefoni stretti, mai il titolo mozzato */
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+    overflow:hidden; overflow-wrap:anywhere;
   }
   #openBtn{
     border:1px solid var(--line); background:var(--paper-2); color:var(--ink);
@@ -228,7 +230,11 @@
     margin:0 0 2px; font-size:.8rem; color:var(--muted); cursor:pointer;
   }
   #capRiga:hover #capLbl{color:var(--ink)}
-  #capLbl{overflow:hidden; white-space:nowrap; text-overflow:ellipsis}
+  /* il nome del capitolo va a capo (fino a 2 righe) invece di troncarsi */
+  #capLbl{
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+    overflow:hidden; overflow-wrap:anywhere; line-height:1.3;
+  }
   .ctrls{display:flex; align-items:center; justify-content:center; gap:22px}
   #stopBtn{color:var(--muted)}
   .ctrls button{
@@ -328,7 +334,8 @@
     padding:12px 10px; border-radius:10px; cursor:pointer; font-size:.95rem;
   }
   .tocIt+.tocIt{border-top:1px solid color-mix(in srgb, var(--line) 55%, transparent)}
-  .tocIt .tocTit{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  /* i titoli vanno a capo, mai troncati: gli schermi sono di tutte le misure */
+  .tocIt .tocTit{flex:1; min-width:0; overflow-wrap:anywhere}
   .tocIt .tocPg{flex:none; color:var(--muted); font-size:.78rem; font-variant-numeric:tabular-nums}
   .tocIt.cur{background:var(--hl); box-shadow:inset 3px 0 0 var(--hl-edge)}
   .tocIt:focus-visible{outline:2px solid var(--accent); outline-offset:-2px}
@@ -345,7 +352,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.26</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.27</span></div>
   <div id="bookTitle"></div>
   <button id="openBtn" type="button">Apri file</button>
 </header>
@@ -555,6 +562,15 @@ const landing=$("landing"), busy=$("busy"), busyMsg=$("busyMsg"), reader=$("read
       capRiga=$("capRiga"), capLbl=$("capLbl"),
       playBtn=$("playBtn"), icoPlay=$("icoPlay"), icoPause=$("icoPause"),
       voiceSel=$("voiceSel"), fileInput=$("fileInput"), toastEl=$("toast");
+
+/* Il margine sotto il testo segue l'altezza VERA del player (che cambia con
+   lo schermo e con la riga del capitolo su 1 o 2 righe): mai righe coperte. */
+try{
+  new ResizeObserver(()=>{
+    const h=player.offsetHeight;
+    if(h)document.querySelector("main").style.paddingBottom=(h+34)+"px";
+  }).observe(player);
+}catch(e){}
 
 let book=null;          // {key,name,pars:[{text,page}],numPages}
 let sents=[];           // {t,par,page}
@@ -1433,10 +1449,10 @@ function generico(t){
 function nomeDopo(par){
   if(!par||par.head)return null;
   const t=par.text.trim();
-  if(t.length<3||t.length>60)return null;
+  if(t.length<3||t.length>80)return null;
   if(/^[a-zà-ú«»""]/.test(t))return null;
   if(/[.!?…;«»""]/.test(t))return null;
-  if(t.split(/\s+/).length>8)return null;
+  if(t.split(/\s+/).length>12)return null;
   return t;
 }
 /* La riga-etichetta SOPRA il titolo grande ("CAPITOLO 1", "PROLOGO", "II"):
@@ -1496,22 +1512,22 @@ function renderBook(){
     if(par.head){
       /* "Capitolo 1" e il suo nome sono spesso due righe-titolo consecutive:
          nell'indice (e su Android Auto) devono essere UNA voce col nome intero */
-      let tit=par.text.length>72?par.text.slice(0,69)+"…":par.text;
+      let tit=par.text.length>110?par.text.slice(0,107)+"…":par.text;
       const prev=headPrec?capitoli[capitoli.length-1]:null;
       if(titoloDelLibro(par.text)&&(par.page==null||par.page<=2))capSoppresso=true;
       else if(headPrec&&capSoppresso&&!generico(par.text)){/* seguito del frontespizio (autore, sottotitolo) */}
       else if(prev&&piatta(prev.t).includes(piatta(tit))){/* nome già nel titolo (dall'indice EPUB) */}
-      else if(prev&&(prev.t+" — "+tit).length<=90){capSoppresso=false;prev.t+=" — "+tit;}
+      else if(prev&&(prev.t+" — "+tit).length<=110){capSoppresso=false;prev.t+=" — "+tit;}
       else{
         capSoppresso=false;
         /* etichetta spoglia e il nome sulla riga sotto, non riconosciuta come
            intestazione: l'indice (e Auto) deve dire "Capitolo 3 — Il nome" */
         const nome=generico(par.text)?nomeDopo(pars[pi+1]):null;
-        if(nome&&(tit+" — "+nome).length<=90)tit+=" — "+nome;
+        if(nome&&(tit+" — "+nome).length<=110)tit+=" — "+nome;
         /* etichetta sulla riga SOPRA il titolo ("CAPITOLO 1", "PROLOGO"):
            entra nella voce, e il salto parte da lì così la voce la legge */
         const et=etichetta(parPrec); let ei=si;
-        if(et&&(et+" — "+tit).length<=90){tit=et+" — "+tit;ei=siPrec;}
+        if(et&&(et+" — "+tit).length<=110){tit=et+" — "+tit;ei=siPrec;}
         capitoli.push({i:ei,t:tit,page:par.page});
       }
     }
