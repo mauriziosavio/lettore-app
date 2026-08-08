@@ -351,7 +351,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.29</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.30</span></div>
   <div id="bookTitle"></div>
 </header>
 
@@ -822,6 +822,24 @@ function splitSentences(par){
 }
 
 /* ============================== extraction ============================== */
+/* Nei libri stampati le etichette dei capitoli sono spesso in maiuscole
+   spaziate ("P R O L O G O", "C A P I T O L O 1"): così però il TTS le
+   compita lettera per lettera e l'indice non le riconosce. Se TUTTA la riga
+   è fatta di caratteri singoli a spazi semplici, si ricompatta; gli spazi
+   doppi (veri confini di parola) restano spazi. */
+function despazia(riga){
+  const pezzi=riga.trim().split(/ {2,}/);
+  let tok=0;
+  for(const p of pezzi){
+    if(!/^(?:[A-ZÀ-Ú0-9] )+[A-ZÀ-Ú0-9]$/.test(p))return riga;
+    tok+=(p.length+1)/2;
+  }
+  if(tok<3)return riga;
+  return pezzi.map(p=>p.replace(/ /g,"")
+    .replace(/^([A-ZÀ-Ú]+)(\d{1,4})$/,"$1 $2")
+    .replace(/^(CAPITOLO|PARTE|LIBRO|SEZIONE|ATTO|SCENA|CAP)([IVXLCDM]{1,7})$/,"$1 $2")
+  ).join(" ");
+}
 async function extractPdf(data,onProg){
   const pdf=await pdfjsLib.getDocument({data}).promise;
   const pages=[];
@@ -855,7 +873,7 @@ async function extractPdf(data,onProg){
         }
         text+=r.str; prev=r;
       }
-      L.text=text.replace(/\s+/g," ").trim();
+      L.text=despazia(text).replace(/\s+/g," ").trim();
       L.x=L.runs[0].x;
       L.h=Math.max(...L.runs.map(r=>r.h));
     }
@@ -1178,7 +1196,10 @@ function extractFb2(testoXml){
         const n=ch.localName;
         if(n==="title"||n==="subtitle"){
           const t=ch.textContent.replace(/\s+/g," ").trim();
-          if(t)pars.push({text:t,page:null,head:true});
+          /* negli FB2 il <title> del body ripete quasi sempre il titolo del
+             libro: da head farebbe "frontespizio" e renderBook tacerebbe
+             anche il titolo successivo — cioè il PRIMO capitolo vero */
+          if(t)pars.push({text:t,page:null,head:!(pars.length===0&&titolo&&piatta(t)===piatta(titolo))});
         }else if(n==="p"||n==="v"||n==="text-author"){
           const t=ch.textContent.replace(/\s+/g," ").trim();
           if(t)pars.push({text:t,page:null});
