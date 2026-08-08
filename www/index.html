@@ -83,6 +83,7 @@
      (nascondere/rimostrare migliaia di paragrafi costava secondi di layout). */
   #landing,#busy{
     position:fixed; inset:0; z-index:4; display:none; overflow:auto;
+    overscroll-behavior:contain;
     background:var(--paper);
     padding:calc(72px + max(env(safe-area-inset-top,0px),var(--sat,0px))) 20px 48px;
     -webkit-overflow-scrolling:touch;
@@ -262,6 +263,9 @@
     position:fixed; inset:0; z-index:30; display:none;
     background:rgba(0,0,0,.42);
   }
+  /* con un pannello aperto il libro sotto resta fermo: senza questo blocco,
+     arrivati in fondo alla lista lo scorrimento "traboccava" sul testo */
+  html.fermo,html.fermo body{overflow:hidden}
   #opzCard{
     position:absolute; left:50%; transform:translateX(-50%); bottom:0;
     width:min(42rem,100%); max-height:80dvh;
@@ -269,7 +273,7 @@
     border-radius:18px 18px 0 0; box-shadow:var(--shadow);
     display:flex; flex-direction:column;
   }
-  #opzList{overflow:auto; padding:6px 18px calc(16px + env(safe-area-inset-bottom))}
+  #opzList{overflow:auto; overscroll-behavior:contain; padding:6px 18px calc(16px + env(safe-area-inset-bottom))}
   .opzTit{font-size:.74rem; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); font-weight:600; margin:16px 0 8px}
   .opzRow{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
   #fsMeno,#fsPiu{width:44px;height:38px;border:1px solid var(--line);background:var(--paper-2);color:var(--ink);border-radius:10px;font-size:1.05rem;font-weight:700;cursor:pointer}
@@ -293,7 +297,7 @@
     font-weight:700; font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
   }
   .shChiudi{border:none;background:none;color:var(--muted);font-size:1.05rem;cursor:pointer;padding:6px 10px;border-radius:50%}
-  #tocList{overflow:auto; padding:8px 10px calc(14px + env(safe-area-inset-bottom))}
+  #tocList{overflow:auto; overscroll-behavior:contain; padding:8px 10px calc(14px + env(safe-area-inset-bottom))}
   #tocTools{
     display:flex; flex-direction:column; gap:8px;
     padding:12px 14px; border-bottom:1px solid var(--line);
@@ -351,7 +355,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.30</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.31</span></div>
   <div id="bookTitle"></div>
 </header>
 
@@ -2096,8 +2100,13 @@ playBtn.addEventListener("click",()=>{
   else{setPlaying(true);speak(idx);}
 });
 /* ============================== pannello Aa: aspetto e pronunce ============================== */
+/* con l'Indice o il pannello Aa aperti la pagina sotto non deve scorrere */
+function sfondoFermo(){
+  const aperto=$("toc").style.display==="block"||$("opz").style.display==="block";
+  document.documentElement.classList.toggle("fermo",aperto);
+}
 const opzEl=$("opz");
-function opzChiudi(){opzEl.style.display="none";}
+function opzChiudi(){opzEl.style.display="none";sfondoFermo();}
 function opzSync(){
   document.querySelectorAll("#temaChips .chip").forEach(c=>c.classList.toggle("on",c.dataset.tema===tema));
   document.querySelectorAll("#lhChips .chip").forEach(c=>c.classList.toggle("on",Math.abs(+c.dataset.lh-lh)<0.01));
@@ -2122,7 +2131,7 @@ function pronRender(){
     box.appendChild(d);
   });
 }
-$("opzBtn").addEventListener("click",()=>{opzSync();pronRender();opzEl.style.display="block";});
+$("opzBtn").addEventListener("click",()=>{opzSync();pronRender();opzEl.style.display="block";sfondoFermo();});
 $("opzChiudi").addEventListener("click",opzChiudi);
 opzEl.addEventListener("click",e=>{if(e.target===opzEl)opzChiudi();});
 document.querySelectorAll("#temaChips .chip").forEach(c=>c.addEventListener("click",()=>{
@@ -2147,7 +2156,7 @@ $("pronAdd").addEventListener("click",()=>{
 
 /* ============================== indice: capitoli, pagine, ricerca ============================== */
 const tocEl=$("toc"), tocList=$("tocList");
-function tocChiudi(){tocEl.style.display="none";}
+function tocChiudi(){tocEl.style.display="none";sfondoFermo();}
 function vaiAFrase(i){
   tocChiudi();
   if(playing){stopSpeech();speak(i);}
@@ -2263,6 +2272,7 @@ function apriIndice(){
   $("cercaInp").value="";
   tocCapitoli();
   tocEl.style.display="block";
+  sfondoFermo();
 }
 $("tocBtn").addEventListener("click",apriIndice);
 capRiga.addEventListener("click",apriIndice);
