@@ -200,6 +200,13 @@
     box-shadow:0 2px 0 var(--hl-edge);
   }
   #reader span.s.read{opacity:.55}
+  #reader figure.tavola{ /* illustrazioni del libro (EPUB): si guardano, non si leggono */
+    margin:1.4em 0; text-align:center;
+  }
+  #reader figure.tavola img{
+    max-width:100%; height:auto; border-radius:10px;
+    box-shadow:0 6px 18px rgba(0,0,0,.18);
+  }
 
   /* ---------- player ---------- */
   #player{
@@ -355,7 +362,7 @@
 </style>
 
 <header>
-  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.31</span></div>
+  <div class="wordmark">Lettore<em>.</em><span class="ver">18.07.32</span></div>
   <div id="bookTitle"></div>
 </header>
 
@@ -1130,6 +1137,7 @@ async function extractEpub(buf,onProg){
   }catch(e){}
   /* i capitoli, nell'ordine di lettura della spine */
   const pars=[];
+  const tavole=new Map(); let nTavole=0; // stessa immagine citata due volte = una sola rasterizzazione
   for(let ci=0;ci<spine.length;ci++){
     const item=man.get(spine[ci]);
     if(!/html|xml/i.test(item.tipo))continue;
@@ -1139,16 +1147,43 @@ async function extractEpub(buf,onProg){
     catch(e){continue;}
     const corpo=doc.body||doc.documentElement;
     if(!corpo)continue;
+    /* se il file ha una vera intestazione, la voce d'indice nasce da quella
+       (con l'eventuale etichetta sulla riga sopra): iniettare ANCHE il titolo
+       del nav raddoppierebbe i capitoli */
+    const haHead=!!corpo.querySelector("h1,h2,h3");
+    const dirFile=dirDi(percorso);
     let prima=true;
-    for(const el of corpo.querySelectorAll("p,h1,h2,h3,h4,h5,h6,li,blockquote,td,dt,dd,figcaption,pre,div")){
+    for(const el of corpo.querySelectorAll("p,h1,h2,h3,h4,h5,h6,li,blockquote,td,dt,dd,figcaption,pre,div,img,image")){
+      if(el.tagName==="IMG"||el.localName==="image"){
+        /* le illustrazioni del libro entrano nel testo (ridotte); non si leggono */
+        const srcImg=el.getAttribute("src")||el.getAttribute("href")||el.getAttribute("xlink:href")||"";
+        const pImg=srcImg&&!/^(data|https?):/i.test(srcImg)?risolvi(dirFile,srcImg):null;
+        if(!pImg||nTavole>=40)continue;
+        let tav=tavole.get(pImg);
+        if(tav===undefined){
+          tav=null;
+          try{
+            const est=(pImg.split(".").pop()||"").toLowerCase();
+            if(/^(png|jpe?g|gif|webp|svg)$/.test(est)){
+              const mime=est==="png"?"image/png":est==="gif"?"image/gif":est==="webp"?"image/webp":est==="svg"?"image/svg+xml":"image/jpeg";
+              const grezza=await blobADataUrl(new Blob([await zipFile(z,pImg)],{type:mime}));
+              tav=await rasterTavola(grezza);
+            }
+          }catch(e){}
+          tavole.set(pImg,tav);
+        }
+        if(tav){pars.push({img:tav.url,w:tav.w,h:tav.h,page:null});nTavole++;}
+        continue;
+      }
       if(el.tagName==="DIV"&&el.querySelector("p,div,h1,h2,h3,h4,h5,h6,li,blockquote"))continue; // solo div foglia
       const t=(el.textContent||"").replace(/\s+/g," ").trim();
       if(!t)continue;
       const head=/^H[1-3]$/.test(el.tagName);
-      let testa=t;
-      if(prima&&!head){ // capitolo senza intestazione: usa il titolo dell'indice
+      let testa=t, capo=head;
+      if(prima&&!head&&!haHead){ // capitolo senza intestazione: usa il titolo dell'indice
         const tit=tocTitoli.get(percorso);
-        if(tit&&piatta(tit)!==piatta(t).slice(0,tit.length))pars.push({text:tit,page:null,head:true});
+        if(tit&&piatta(tit)===piatta(t))capo=true; // la prima riga È già il titolo: promossa, senza doppioni
+        else if(tit&&piatta(tit)!==piatta(t).slice(0,tit.length))pars.push({text:tit,page:null,head:true});
       }else if(prima&&head){
         /* intestazione "Capitolo 1" e basta, ma l'indice del libro ha il nome
            completo ("Capitolo 1 — Il ritorno"): meglio quello, anche a video */
@@ -1156,7 +1191,7 @@ async function extractEpub(buf,onProg){
         if(tit&&tit.length>t.length&&piatta(tit).startsWith(piatta(t)))testa=tit;
       }
       prima=false;
-      pars.push({text:testa,page:null,head});
+      pars.push({text:testa,page:null,head:capo});
     }
     if(onProg)onProg(ci+1,spine.length);
     if(ci%5===4)await new Promise(r=>setTimeout(r,0));
@@ -1247,6 +1282,30 @@ function rasterizza(src,w,h,tipo,q){
         c.height=Math.max(1,Math.round(img.height*sc));
         c.getContext("2d").drawImage(img,0,0,c.width,c.height);
         res(c.toDataURL(tipo||"image/jpeg",q||.85));
+      }catch(e){res(null);}
+    };
+    img.onerror=()=>res(null);
+    img.src=src;
+  });
+}
+/* Le illustrazioni dentro i libri (tavole EPUB): ridotte quel tanto che basta
+   per lo schermo del telefono e ricompresse, così la cache resta leggera.
+   Mai ingrandite; sotto i 50 px sono fregi decorativi e si saltano. */
+const TAV_W=1200, TAV_H=1800;
+function rasterTavola(src){
+  return new Promise(res=>{
+    const img=new Image();
+    img.onload=()=>{
+      try{
+        if(img.width<50||img.height<50)return res(null);
+        const sc=Math.min(1,TAV_W/img.width,TAV_H/img.height);
+        const c=document.createElement("canvas");
+        c.width=Math.max(1,Math.round(img.width*sc));
+        c.height=Math.max(1,Math.round(img.height*sc));
+        const g=c.getContext("2d");
+        g.fillStyle="#fff"; g.fillRect(0,0,c.width,c.height); // il JPEG non ha trasparenza: fondo bianco, non nero
+        g.drawImage(img,0,0,c.width,c.height);
+        res({url:c.toDataURL("image/jpeg",.8),w:c.width,h:c.height});
       }catch(e){res(null);}
     };
     img.onerror=()=>res(null);
@@ -1559,9 +1618,10 @@ function renderBook(){
      una pausa da "fine paragrafo" dove non c'è nessuna punteggiatura. */
   const pars=[];
   for(const par of book.pars){
+    if(par.img){pars.push({img:par.img,w:par.w,h:par.h,page:par.page!=null?par.page:null});continue;}
     const head=par.head!==undefined?!!par.head:rilevaTitolo(par.text);
     const p=pars[pars.length-1];
-    if(p&&!p.head&&!head&&/^[a-zà-ú]/.test(par.text)&&/[A-Za-zà-úÀ-Ú0-9,;:‐-]$/.test(p.text)){
+    if(p&&!p.head&&!p.img&&!head&&/^[a-zà-ú]/.test(par.text)&&/[A-Za-zà-úÀ-Ú0-9,;:‐-]$/.test(p.text)){
       if(/[‐-]$/.test(p.text))p.text=p.text.slice(0,-1)+par.text; // parola sillabata
       else p.text+=" "+par.text;
     }else{
@@ -1575,7 +1635,7 @@ function renderBook(){
     const PAGCH=1600; let acc=PAGCH, pg=0;
     for(const p of pars){
       if(acc>=PAGCH){pg++; acc=0;}
-      p.page=pg; acc+=p.text.length+1;
+      p.page=pg; acc+=p.img?0:p.text.length+1;
     }
     if(pg>=2)book.numPages=pg;
     else pars.forEach(p=>{p.page=null;});
@@ -1585,6 +1645,11 @@ function renderBook(){
     if(par.page!==null&&par.page!==lastPage){
       html.push('<div class="pgbrk" aria-hidden="true">Pagina '+par.page+"</div>");
       lastPage=par.page;
+    }
+    if(par.img){ // tavola: si guarda, non si legge (e non tocca etichette/frasi)
+      html.push('<figure class="tavola"><img src="'+par.img+'"'
+        +(par.w?' width="'+par.w+'" height="'+par.h+'"':"")+' alt="" decoding="async"></figure>');
+      return;
     }
     /* le righe di soli simboli (es. i separatori «* * *») non si leggono: via */
     const pieces=splitSentences(par.text).filter(t=>/[A-Za-zÀ-ÿ0-9]/.test(t));
