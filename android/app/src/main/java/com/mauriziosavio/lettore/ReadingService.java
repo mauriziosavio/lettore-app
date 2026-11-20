@@ -120,6 +120,9 @@ public class ReadingService extends MediaBrowserServiceCompat {
     private int frasiLampo = 0;    // frasi "finite" troppo in fretta di fila (voce in rete assente)
     private int lampoPos = -1;     // la frase che sta risultando "lampo"...
     private int lampoStessa = 0;   // ...e quante volte di fila (alla 4ª è davvero vuota: si va avanti)
+    private int muteSaltate = 0;   // frasi saltate di fila perché "mute": a 3 il motore è muto, NON il testo
+    private int primaMuta = -1;    // la prima di quelle frasi: lì torna il segnalibro
+    private int ricreazioni = 0;   // TTS ricreati in questo play (max 2, poi si torna ai retry semplici)
     private boolean attesaFocus = false; // in pausa per focus rubato (telefonata/navigatore): riprende da solo
     private List<String> capTitoli; // capitoli per il catalogo di Android Auto
     private int[] capFrasi;
@@ -527,6 +530,9 @@ public class ReadingService extends MediaBrowserServiceCompat {
                 lampoPos = -1;
                 lampoStessa = 0;
                 speakErrori = 0;
+                ricreazioni = 0;
+                muteSaltate = 0;
+                primaMuta = -1;
                 ttsTentativi = 0;
                 attesaFocus = false;
                 playing = true;
@@ -557,8 +563,9 @@ public class ReadingService extends MediaBrowserServiceCompat {
             int esito = tts.speak(frase, TextToSpeech.QUEUE_FLUSH, null, "u" + gen + "-" + pos);
             if (esito != TextToSpeech.SUCCESS) {
                 speakErrori++;
-                if (speakErrori >= 5) { // stesso oggetto TTS rotto: ricrealo invece di insistere
+                if (speakErrori >= 5 && ricreazioni < 2) { // stesso oggetto TTS rotto: ricrealo (max 2 volte per play)
                     speakErrori = 0;
+                    ricreazioni++;
                     riavviaTts();
                     return;
                 }
@@ -645,6 +652,22 @@ public class ReadingService extends MediaBrowserServiceCompat {
                     main.postDelayed(() -> { if (playing && g == gen) parla(); }, 900);
                     return;
                 }
+                /* frase saltata perché muta. Se ne capitano 3 DI FILA non è il testo
+                   a essere vuoto ma il motore a non produrre audio: invece di sfogliare
+                   il libro in silenzio (a schermo spento, in auto) si torna alla prima
+                   frase muta e ci si ferma, col segnalibro al suo posto. */
+                if (muteSaltate == 0) primaMuta = pos;
+                muteSaltate++;
+                if (muteSaltate >= 3) {
+                    if (primaMuta >= 0 && primaMuta < frasi.size()) pos = primaMuta;
+                    muteSaltate = 0; primaMuta = -1;
+                    frasiLampo = 0; lampoPos = -1; lampoStessa = 0;
+                    pausa();
+                    LetturaServicePlugin.emit("pos", pos, false);
+                    return;
+                }
+            } else {
+                muteSaltate = 0; primaMuta = -1; // una frase vera, con audio: tutto in ordine
             }
             frasiLampo = 0;
             lampoPos = -1;
@@ -1057,6 +1080,7 @@ public class ReadingService extends MediaBrowserServiceCompat {
     private void salta(int a, float nuovoRate, boolean leggi) {
         if (distrutto) return;
         try {
+            if (leggi) { ricreazioni = 0; muteSaltate = 0; primaMuta = -1; } // nuovo play voluto: contatori da capo
             gen++;
             if (a >= 0) pos = a;
             if (nuovoRate > 0) rate = nuovoRate;
