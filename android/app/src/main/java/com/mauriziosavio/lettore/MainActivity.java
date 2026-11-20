@@ -4,6 +4,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.webkit.WebView;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
@@ -11,18 +12,28 @@ import androidx.core.view.WindowInsetsCompat;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
+    private static boolean crashInstallato = false; // un solo registratore per processo
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
         // Registratore di crash: se l'app cade, il motivo finisce in crash.txt
         // e alla riapertura viene mostrato all'utente (via LetturaService.crash()).
-        final Thread.UncaughtExceptionHandler prev = Thread.getDefaultUncaughtExceptionHandler();
-        Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
-            try (java.io.PrintWriter pw = new java.io.PrintWriter(
-                    new java.io.File(getFilesDir(), "crash.txt"))) {
-                e.printStackTrace(pw);
+        // Installato una volta sola (altrimenti a ogni ricreazione dell'Activity si
+        // incatenerebbe a sé stesso) e senza trattenere l'Activity.
+        if (!crashInstallato) {
+            crashInstallato = true;
+            try {
+                final java.io.File dir = getApplicationContext().getFilesDir();
+                final Thread.UncaughtExceptionHandler prev = Thread.getDefaultUncaughtExceptionHandler();
+                Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+                    try (java.io.PrintWriter pw = new java.io.PrintWriter(
+                            new java.io.File(dir, "crash.txt"))) {
+                        e.printStackTrace(pw);
+                    } catch (Throwable ignored) { }
+                    if (prev != null) prev.uncaughtException(t, e);
+                });
             } catch (Throwable ignored) { }
-            if (prev != null) prev.uncaughtException(t, e);
-        });
+        }
         registerPlugin(LetturaServicePlugin.class);
         super.onCreate(savedInstanceState);
         // Edge-to-edge (Android 15+): comunica al WebView i rientri di sistema,
@@ -49,5 +60,30 @@ public class MainActivity extends BridgeActivity {
             wv.evaluateJavascript(js, null);
             return insets;
         });
+        // Tasto/gesto Indietro: prima chiede al JS (chiude un pannello o torna indietro);
+        // se il JS non ha nulla da fare, l'app va in secondo piano senza distruggere
+        // il WebView (il servizio di lettura continua).
+        try {
+            getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+                @Override
+                public void handleOnBackPressed() {
+                    try {
+                        WebView w = getBridge() != null ? getBridge().getWebView() : null;
+                        if (w == null) { MainActivity.this.moveTaskToBack(true); return; }
+                        w.evaluateJavascript(
+                            "(window.lettoreIndietro&&window.lettoreIndietro())?'1':'0'",
+                            risultato -> {
+                                try {
+                                    if (risultato == null || !risultato.contains("1")) {
+                                        MainActivity.this.moveTaskToBack(true);
+                                    }
+                                } catch (Throwable ignored) { }
+                            });
+                    } catch (Throwable t) {
+                        try { MainActivity.this.moveTaskToBack(true); } catch (Throwable ignored) { }
+                    }
+                }
+            });
+        } catch (Throwable ignored) { }
     }
 }

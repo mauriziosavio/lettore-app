@@ -61,7 +61,7 @@ public class ReadingService extends MediaBrowserServiceCompat {
     static final String AZ_PREV = "com.mauriziosavio.lettore.PREV";
     static final String AZ_STOP = "com.mauriziosavio.lettore.STOP";
 
-    private static ReadingService instance;
+    private static volatile ReadingService instance;
 
     /* coda consegnata dal plugin (stesso processo: niente limiti degli Intent) */
     private static List<String> qFrasi;
@@ -77,6 +77,16 @@ public class ReadingService extends MediaBrowserServiceCompat {
     private static int[] qCapP;
     private static byte[] qCopertina;
     private static boolean qNuova = false;
+    /* timer chiesto dal JS mentre il servizio non era ancora nato (play a freddo):
+       scadenza assoluta in elapsedRealtime, 0 = nessuno. Consumato da sincronizza(). */
+    private static long qTimerFine = 0;
+
+    /* scritture di libro.json/copertina: un solo thread, in ordine; un salvataggio
+       superato da uno più nuovo prima di cominciare viene saltato */
+    private static final java.util.concurrent.ExecutorService SCRITTORE =
+        java.util.concurrent.Executors.newSingleThreadExecutor();
+    private static final java.util.concurrent.atomic.AtomicInteger GEN_SALVA =
+        new java.util.concurrent.atomic.AtomicInteger(0);
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private PowerManager.WakeLock wakeLock;
@@ -84,6 +94,10 @@ public class ReadingService extends MediaBrowserServiceCompat {
     private AudioFocusRequest afr;
     private TextToSpeech tts;
     private boolean ttsPronto = false;
+    private volatile boolean distrutto = false; // onDestroy avvenuto: niente più lavoro
+    private int ttsTentativi = 0;  // init del TTS fallite di fila (ritenta ogni 5 s, max 5)
+    private int speakErrori = 0;   // tts.speak rifiutati di fila (a 5 il TTS viene ricreato)
+    private final Runnable ritentaTts = () -> { if (!distrutto && tts == null) initTts(); };
 
     private List<String> frasi;
     private int[] pagine;
@@ -91,7 +105,7 @@ public class ReadingService extends MediaBrowserServiceCompat {
     private int pos = 0;
     private float rate = 1f;
     private int numPages = 0;
-    private String chiave = "";
+    private volatile String chiave = "";
     private String title = "Lettore";
     private boolean playing = false;
     private int gen = 0;      // invalida i callback delle frasi superate
@@ -104,6 +118,8 @@ public class ReadingService extends MediaBrowserServiceCompat {
     private long statInizio = 0;   // statistiche: da quando sta leggendo questa sessione
     private long parlaInizio = 0;  // quando è partita la frase corrente (smaschera gli onDone senza audio)
     private int frasiLampo = 0;    // frasi "finite" troppo in fretta di fila (voce in rete assente)
+    private int lampoPos = -1;     // la frase che sta risultando "lampo"...
+    private int lampoStessa = 0;   // ...e quante volte di fila (alla 4ª è davvero vuota: si va avanti)
     private boolean attesaFocus = false; // in pausa per focus rubato (telefonata/navigatore): riprende da solo
     private List<String> capTitoli; // capitoli per il catalogo di Android Auto
     private int[] capFrasi;
@@ -145,53 +161,115 @@ public class ReadingService extends MediaBrowserServiceCompat {
             ReadingService s = instance;
             if (s != null) {
                 s.main.post(s::sincronizza);
-            } else {
-                Intent i = new Intent(c, ReadingService.class);
-                if (Build.VERSION.SDK_INT >= 26) c.startForegroundService(i);
-                else c.startService(i);
             }
+            try {
+                /* anche col servizio vivo: se è vivo solo perché "bound" da Android Auto
+                   diventa "started" e non muore allo scollegamento. onStartCommand senza
+                   azione passa da sincronizza() → refresh() → startForeground. */
+                Intent i = new Intent(c, ReadingService.class);
+                ContextCompat.startForegroundService(c, i);
+            } catch (Throwable ignored) { }
         } catch (Throwable ignored) { }
     }
 
+    /** Pausa dal JS: con servizio spento è un no-op (nessuna pausa "pendente"). */
     static void pausaStatica() {
         ReadingService s = instance;
-        if (s != null) s.main.post(s::pausa);
+        if (s != null) s.main.post(() -> {
+            /* servizio vivo ma senza libro e fermo (nato a freddo da Auto/SystemUI):
+               niente da mettere in pausa, e un evento "stato" con i=0 sposterebbe il JS */
+            if (s.frasi == null && !s.playing && !s.attesaFocus) return;
+            s.pausa();
+        });
     }
 
-    static void saltaStatica(Context c, int a, float nuovoRate, boolean leggi) {
+    /** Chiave del libro caricato nel servizio (vuota se nessuno): accompagna ogni evento verso il JS. */
+    static String chiaveCorrente() {
+        try {
+            ReadingService s = instance;
+            String c = s != null ? s.chiave : null;
+            return c != null ? c : "";
+        } catch (Throwable ignored) { return ""; }
+    }
+
+    /** Segnalibro persistente: scrive pos solo se il libro salvato è quello indicato
+     *  (chiaveReq vuota = nessun controllo, comportamento storico). */
+    private static void scriviSegnalibro(Context c, int a, String chiaveReq) {
+        if (a < 0) return;
+        try {
+            SharedPreferences p = c.getSharedPreferences("lettura", MODE_PRIVATE);
+            if (chiaveReq != null && !chiaveReq.isEmpty()
+                    && !chiaveReq.equals(p.getString("chiave", ""))) return; // libro diverso
+            p.edit().putInt("pos", a).putBoolean("playing", false).apply();
+        } catch (Throwable ignored) { }
+    }
+
+    static void saltaStatica(Context c, int a, float nuovoRate, boolean leggi, String chiaveReq) {
+        final String ch = chiaveReq != null ? chiaveReq : "";
+        final Context app = c.getApplicationContext() != null ? c.getApplicationContext() : c;
         ReadingService s = instance;
         if (s != null) {
-            s.main.post(() -> s.salta(a, nuovoRate, leggi));
-        } else if (a >= 0) {
-            try { // servizio spento: aggiorna solo il segnalibro persistente
-                SharedPreferences p = c.getSharedPreferences("lettura", MODE_PRIVATE);
-                p.edit().putInt("pos", a).putBoolean("playing", false).apply();
-            } catch (Throwable ignored) { }
+            s.main.post(() -> {
+                try {
+                    if (s.distrutto) { scriviSegnalibro(app, a, ch); return; }
+                    if (!ch.isEmpty()) {
+                        if (s.frasi != null) {
+                            if (!ch.equals(s.chiave)) return; // richiesta per un altro libro: ignorata
+                        } else if (!leggi) {
+                            /* servizio vivo ma senza libro (creato a freddo da Auto):
+                               come a servizio spento, solo il segnalibro persistente */
+                            scriviSegnalibro(app, a, ch);
+                            return;
+                        }
+                    }
+                    s.salta(a, nuovoRate, leggi);
+                } catch (Throwable ignored) { }
+            });
+        } else {
+            scriviSegnalibro(app, a, ch); // servizio spento: aggiorna solo il segnalibro persistente
         }
     }
 
-    /** {i, playing, secondi di timer rimasti} — dal servizio vivo o, se spento, dal segnalibro salvato. */
+    /** {i, playing, secondi di timer rimasti} — dal servizio vivo con un libro o,
+     *  altrimenti (spento o nato a freddo senza libro), dal segnalibro salvato. */
     static int[] posizione(Context c, String[] chiaveOut) {
         ReadingService s = instance;
-        if (s != null) {
-            chiaveOut[0] = s.chiave;
+        if (s != null && s.frasi != null) {
+            chiaveOut[0] = s.chiave != null ? s.chiave : "";
             int t = s.fineTimer > 0 ? (int) Math.max(0, (s.fineTimer - SystemClock.elapsedRealtime()) / 1000) : 0;
             return new int[]{ s.pos, s.playing ? 1 : 0, t };
         }
+        int t = 0;
+        try {
+            if (s != null && s.fineTimer > 0)
+                t = (int) Math.max(0, (s.fineTimer - SystemClock.elapsedRealtime()) / 1000);
+        } catch (Throwable ignored) { }
         try {
             SharedPreferences p = c.getSharedPreferences("lettura", MODE_PRIVATE);
             chiaveOut[0] = p.getString("chiave", "");
-            return new int[]{ p.getInt("pos", -1), 0, 0 };
+            return new int[]{ p.getInt("pos", -1), 0, t };
         } catch (Throwable ignored) {
             chiaveOut[0] = "";
             return new int[]{ -1, 0, 0 };
         }
     }
 
-    /** Timer di spegnimento: fra "minuti" mette in pausa da solo (0 = annulla). */
+    /** Timer di spegnimento: fra "minuti" mette in pausa da solo (0 = annulla).
+     *  Col servizio non ancora nato (play a freddo) la scadenza resta in attesa
+     *  e la consuma sincronizza(). */
     static void timerStatico(double minuti) {
         ReadingService s = instance;
-        if (s != null) s.main.post(() -> s.impostaTimer(minuti));
+        if (s != null) {
+            synchronized (ReadingService.class) { qTimerFine = 0; }
+            s.main.post(() -> s.impostaTimer(minuti));
+            return;
+        }
+        long ms = (long) (minuti * 60_000L);
+        synchronized (ReadingService.class) {
+            qTimerFine = ms > 0 ? SystemClock.elapsedRealtime() + ms : 0;
+        }
+        ReadingService s2 = instance; // nato nel frattempo? consuma subito
+        if (s2 != null) s2.main.post(s2::consumaTimerPendente);
     }
 
     /** Salva la voce scelta e, se il servizio è vivo, la applica subito. */
@@ -283,6 +361,11 @@ public class ReadingService extends MediaBrowserServiceCompat {
                     if ("CHIUDI".equals(action)) main.post(ReadingService.this::fermaTutto);
                 }
             });
+            try { // toccando il lettore (impostazioni rapide, schermata di blocco) si apre l'app
+                Intent apri = new Intent(this, MainActivity.class);
+                session.setSessionActivity(PendingIntent.getActivity(this, 10, apri,
+                    PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
+            } catch (Throwable ignored) { }
             session.setActive(true);
             setSessionToken(session.getSessionToken()); // Android Auto trova i comandi da qui
         } catch (Throwable t) {
@@ -318,19 +401,36 @@ public class ReadingService extends MediaBrowserServiceCompat {
     /* ============ motore ============ */
 
     private void initTts() {
-        if (tts != null) return;
+        if (tts != null || distrutto) return;
         try {
-            tts = new TextToSpeech(this, status -> main.post(() -> {
-                ttsPronto = status == TextToSpeech.SUCCESS;
-                if (!ttsPronto) return;
-                try { tts.setLanguage(Locale.ITALIAN); } catch (Throwable ignored) { }
+            main.removeCallbacks(ritentaTts);
+            /* il riferimento all'istanza creata da QUESTA chiamata: il Runnable sotto
+               esce se nel frattempo il TTS è stato ricreato o il servizio distrutto */
+            final TextToSpeech[] creato = new TextToSpeech[1];
+            creato[0] = new TextToSpeech(this, status -> main.post(() -> {
+              try {
+                final TextToSpeech mio = creato[0];
+                if (distrutto || mio == null || tts != mio) return;
+                if (status != TextToSpeech.SUCCESS) {
+                    /* motore non legato: chiudi, dimentica e ritenta fra 5 s (max 5 volte di fila) */
+                    ttsPronto = false;
+                    tts = null;
+                    try { mio.shutdown(); } catch (Throwable ignored) { }
+                    ttsTentativi++;
+                    if (ttsTentativi <= 5) main.postDelayed(ritentaTts, 5000);
+                    return;
+                }
+                ttsTentativi = 0;
+                speakErrori = 0;
+                ttsPronto = true;
+                try { mio.setLanguage(Locale.ITALIAN); } catch (Throwable ignored) { }
                 applicaVoce(); // la voce italiana scelta dall'utente, se ne ha salvata una
                 try {
-                    tts.setAudioAttributes(new AudioAttributes.Builder()
+                    mio.setAudioAttributes(new AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build());
                 } catch (Throwable ignored) { }
-                tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                mio.setOnUtteranceProgressListener(new UtteranceProgressListener() {
                     @Override public void onStart(String id) { }
                     @Override public void onDone(String id) { main.post(() -> fineFrase(id, false)); }
                     @Override public void onError(String id) { main.post(() -> fineFrase(id, true)); }
@@ -351,27 +451,83 @@ public class ReadingService extends MediaBrowserServiceCompat {
                     }
                 });
                 if (playing) parla();
+              } catch (Throwable ignored) { }
             }));
+            tts = creato[0];
+        } catch (Throwable ignored) { }
+    }
+
+    /** TTS che rifiuta ogni speak: chiudilo e ricrealo da zero (onInit riparte con parla() se playing). */
+    private void riavviaTts() {
+        if (distrutto) return;
+        try {
+            gen++; // gli eventuali callback del vecchio motore non contano più
+            ttsPronto = false;
+            TextToSpeech vecchio = tts;
+            tts = null;
+            try { if (vecchio != null) { vecchio.stop(); vecchio.shutdown(); } } catch (Throwable ignored) { }
+            initTts();
+        } catch (Throwable ignored) { }
+    }
+
+    /** Timer chiesto dal JS prima che il servizio nascesse: valido solo se non ancora scaduto. */
+    private void consumaTimerPendente() {
+        try {
+            if (distrutto) return;
+            long fine;
+            synchronized (ReadingService.class) {
+                fine = qTimerFine;
+                qTimerFine = 0;
+            }
+            if (fine <= 0) return;
+            long resto = fine - SystemClock.elapsedRealtime();
+            if (resto <= 0) return; // già scaduto: ignorato
+            main.removeCallbacks(timerRun);
+            fineTimer = fine;
+            main.postDelayed(timerRun, resto);
         } catch (Throwable ignored) { }
     }
 
     private void sincronizza() {
+        if (distrutto) return;
         try {
             boolean nuova;
+            String chiavePrima = chiave;
+            if (frasi == null) { // servizio nato a freddo: la copertina su disco è del libro salvato
+                try { chiavePrima = getSharedPreferences("lettura", MODE_PRIVATE).getString("chiave", ""); }
+                catch (Throwable ignored) { }
+            }
+            boolean senzaCopertina = false;
+            boolean viaCopertina = false;
             synchronized (ReadingService.class) {
                 nuova = qNuova;
                 if (nuova) {
                     frasi = qFrasi; pagine = qPagine; pause = qPause; pos = Math.max(0, qDa);
-                    rate = qRate; title = qTitolo; numPages = qNumPages; chiave = qChiave;
+                    rate = qRate; title = qTitolo; numPages = qNumPages;
+                    chiave = qChiave != null ? qChiave : "";
                     capTitoli = qCapT; capFrasi = qCapI; capPagine = qCapP;
                     if (qCopertina != null) copertinaBytes = qCopertina;
+                    else senzaCopertina = true;
                     qNuova = false;
                 }
             }
+            if (nuova && senzaCopertina && !chiave.equals(chiavePrima != null ? chiavePrima : "")) {
+                /* libro nuovo senza copertina: via quella del libro precedente (in memoria;
+                   il file la cancella salvaLibroSuDisco). Niente rilettura dal disco. */
+                copertinaBytes = null;
+                copertina = null;
+                copertinaCercata = true;
+                viaCopertina = true;
+            }
+            consumaTimerPendente(); // timer chiesto a servizio ancora freddo
             if (nuova) {
                 gen++;
                 errori = 0;
                 frasiLampo = 0;
+                lampoPos = -1;
+                lampoStessa = 0;
+                speakErrori = 0;
+                ttsTentativi = 0;
                 attesaFocus = false;
                 playing = true;
                 statParte();
@@ -381,7 +537,7 @@ public class ReadingService extends MediaBrowserServiceCompat {
                 } catch (Throwable ignored) { }
                 salva();
                 salvaLibroSuDisco(frasi, pagine, pause, rate, title, numPages, chiave,
-                    capTitoli, capFrasi, capPagine, copertinaBytes);
+                    capTitoli, capFrasi, capPagine, copertinaBytes, viaCopertina);
                 if (ttsPronto) parla();
                 else initTts();
                 LetturaServicePlugin.emit("stato", pos, true); // conferma subito l'icona ⏸ nel JS
@@ -391,18 +547,28 @@ public class ReadingService extends MediaBrowserServiceCompat {
     }
 
     private void parla() {
+        if (distrutto) return;
         try {
-            if (!playing || frasi == null || pos < 0 || pos >= frasi.size() || !ttsPronto) return;
+            if (!playing || frasi == null || pos < 0 || pos >= frasi.size()) return;
+            if (tts == null) { initTts(); return; } // TTS perso (init fallita): ricrealo, onInit riparte
+            if (!ttsPronto) return;
             tts.setSpeechRate(rate);
             String frase = frasi.get(pos);
             int esito = tts.speak(frase, TextToSpeech.QUEUE_FLUSH, null, "u" + gen + "-" + pos);
             if (esito != TextToSpeech.SUCCESS) {
+                speakErrori++;
+                if (speakErrori >= 5) { // stesso oggetto TTS rotto: ricrealo invece di insistere
+                    speakErrori = 0;
+                    riavviaTts();
+                    return;
+                }
                 /* motore occupato o non ancora legato (tipico a freddo): senza questo
                    retry non arriverebbe MAI un callback e la lettura resterebbe muta */
                 final int g = gen;
                 main.postDelayed(() -> { if (playing && g == gen) parla(); }, 800);
                 return;
             }
+            speakErrori = 0;
             parlaInizio = SystemClock.elapsedRealtime();
             armaGuardia(frase.length());
             preparaSegmenti(frase); // Auto sfoglia la frase a schermate, insieme alla voce
@@ -461,20 +627,28 @@ public class ReadingService extends MediaBrowserServiceCompat {
                 return;
             }
             if (finintaTroppoInFretta()) {
-                frasiLampo++;
-                if (frasiLampo >= 3) {
-                    /* la voce scelta non produce audio (tipico: voce in rete senza
-                       connessione): torna alla voce di sistema e avvisa il JS */
-                    frasiLampo = 0;
-                    try { getSharedPreferences("lettura", MODE_PRIVATE).edit().remove("voce").apply(); } catch (Throwable ignored) { }
-                    try { if (tts != null) tts.setLanguage(Locale.ITALIAN); } catch (Throwable ignored) { }
-                    LetturaServicePlugin.emit("voceko", pos, playing);
+                if (lampoPos == pos) lampoStessa++;
+                else { lampoPos = pos; lampoStessa = 1; }
+                /* alla 4ª volta di fila della STESSA frase (anche con la voce di sistema)
+                   è davvero vuota per il motore: si prosegue col normale avanzamento */
+                if (lampoStessa < 4) {
+                    frasiLampo++;
+                    if (frasiLampo >= 3) {
+                        /* la voce scelta non produce audio (tipico: voce in rete senza
+                           connessione): torna alla voce di sistema e avvisa il JS */
+                        frasiLampo = 0;
+                        try { getSharedPreferences("lettura", MODE_PRIVATE).edit().remove("voce").apply(); } catch (Throwable ignored) { }
+                        try { if (tts != null) tts.setLanguage(Locale.ITALIAN); } catch (Throwable ignored) { }
+                        LetturaServicePlugin.emit("voceko", pos, playing);
+                    }
+                    final int g = gen;
+                    main.postDelayed(() -> { if (playing && g == gen) parla(); }, 900);
+                    return;
                 }
-                final int g = gen;
-                main.postDelayed(() -> { if (playing && g == gen) parla(); }, 900);
-                return;
             }
             frasiLampo = 0;
+            lampoPos = -1;
+            lampoStessa = 0;
             errori = 0;
             if (pos + 1 >= frasi.size()) {
                 playing = false;
@@ -568,7 +742,9 @@ public class ReadingService extends MediaBrowserServiceCompat {
             long resto = fineTimer - SystemClock.elapsedRealtime();
             if (resto > 1000) { main.postDelayed(timerRun, resto); return; } // sveglia arrivata in anticipo
             fineTimer = 0;
-            if (playing) pausa(); // segnalibro già salvato da pausa(); notifica resta per riprendere
+            /* anche in attesa del focus (telefonata/navigatore): pausa() azzera
+               attesaFocus, così al GAIN la lettura non riparte */
+            if (playing || attesaFocus) pausa(); // segnalibro già salvato da pausa(); notifica resta per riprendere
         } catch (Throwable ignored) { }
     }
 
@@ -599,6 +775,7 @@ public class ReadingService extends MediaBrowserServiceCompat {
      *  lo ricarica da libro.json e riparte dal segnalibro salvato.
      *  a>=0 = riparti dalla frase a (indice di Auto); pg>0 = dalla pagina pg. */
     private void riprendi(int a, int pg) {
+        if (distrutto) return;
         try { // da bound (Auto) a servizio avviato: sopravvive quando Auto si scollega
             Intent i = new Intent(this, ReadingService.class);
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(i);
@@ -641,6 +818,7 @@ public class ReadingService extends MediaBrowserServiceCompat {
                     cpg[i] = x.optInt("p", 0);
                 }
                 main.post(() -> {
+                    if (distrutto) return;
                     if (frasi != null) { saltaA(a, pg); return; } // nel frattempo è arrivato dal JS
                     frasi = nf; pagine = np; pause = nu; rate = r;
                     title = t; numPages = npg; chiave = ch;
@@ -662,15 +840,26 @@ public class ReadingService extends MediaBrowserServiceCompat {
     private void salvaLibroSuDisco(final List<String> f, final int[] pg, final int[] pa,
                                    final float r, final String t, final int np, final String ch,
                                    final List<String> ct, final int[] ci, final int[] cp,
-                                   final byte[] cop) {
-        new Thread(() -> {
+                                   final byte[] cop, final boolean viaCopertina) {
+        final java.io.File dir = getFilesDir();
+        final Context app = getApplicationContext();
+        final int mia = GEN_SALVA.incrementAndGet();
+        try { SCRITTORE.execute(() -> {
+            /* la cancellazione della copertina del libro precedente non va persa anche
+               se questo salvataggio è superato (l'ordine del thread unico la preserva) */
+            if (cop == null && viaCopertina) {
+                try { new java.io.File(dir, COPERTINA_FILE).delete(); } catch (Throwable ignored) { }
+            }
+            if (mia != GEN_SALVA.get()) return; // superato da un salvataggio più nuovo
             try { // copertina in un file suo: bitmap pronta anche a servizio freddo
                 if (cop != null) {
-                    java.io.File cf = new java.io.File(getFilesDir(), COPERTINA_FILE + ".tmp");
+                    java.io.File cf = new java.io.File(dir, COPERTINA_FILE + ".tmp");
                     try (java.io.FileOutputStream out = new java.io.FileOutputStream(cf)) {
                         out.write(cop);
+                        out.flush();
+                        out.getFD().sync();
                     }
-                    cf.renameTo(new java.io.File(getFilesDir(), COPERTINA_FILE));
+                    cf.renameTo(new java.io.File(dir, COPERTINA_FILE));
                 }
             } catch (Throwable ignored) { }
             try {
@@ -693,17 +882,23 @@ public class ReadingService extends MediaBrowserServiceCompat {
                 o.put("capitoli", ac);
                 o.put("rate", r); o.put("titolo", t); o.put("numPages", np); o.put("chiave", ch);
                 try { // copia leggera per il catalogo di Auto a servizio freddo
-                    getSharedPreferences("lettura", MODE_PRIVATE).edit()
+                    app.getSharedPreferences("lettura", MODE_PRIVATE).edit()
                         .putString("capitoli", ac.toString()).apply();
                 } catch (Throwable ignored) { }
-                java.io.File tmp = new java.io.File(getFilesDir(), LIBRO_FILE + ".tmp");
+                java.io.File tmp = new java.io.File(dir, LIBRO_FILE + ".tmp");
                 try (java.io.FileOutputStream out = new java.io.FileOutputStream(tmp)) {
                     out.write(o.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    out.flush();
+                    out.getFD().sync();
                 }
-                tmp.renameTo(new java.io.File(getFilesDir(), LIBRO_FILE));
-                try { notifyChildrenChanged(RADICE); } catch (Throwable ignored) { }
+                tmp.renameTo(new java.io.File(dir, LIBRO_FILE));
+                if (!distrutto) {
+                    try { notifyChildrenChanged(RADICE); } catch (Throwable ignored) { }
+                    try { notifyChildrenChanged(CAPITOLI_ID); } catch (Throwable ignored) { }
+                    try { notifyChildrenChanged(PAGINE_ID); } catch (Throwable ignored) { }
+                }
             } catch (Throwable ignored) { }
-        }).start();
+        }); } catch (Throwable ignored) { }
     }
 
     /* ---- catalogo per Android Auto (MediaBrowserService) ---- */
@@ -852,12 +1047,15 @@ public class ReadingService extends MediaBrowserServiceCompat {
     /** Cambio voce a caldo: se sta leggendo, la frase corrente riparte con la nuova voce. */
     private void applicaVoceScelta() {
         frasiLampo = 0; // nuova voce, nuova fiducia
+        lampoPos = -1;
+        lampoStessa = 0;
         applicaVoce();
         try { if (playing && ttsPronto) salta(-1, 0, true); } catch (Throwable ignored) { }
     }
 
     /** a<0 = resta dov'è; rate<=0 = invariato; leggi = avvia/continua la voce. */
     private void salta(int a, float nuovoRate, boolean leggi) {
+        if (distrutto) return;
         try {
             gen++;
             if (a >= 0) pos = a;
@@ -886,6 +1084,9 @@ public class ReadingService extends MediaBrowserServiceCompat {
     }
 
     private void salva() {
+        /* senza libro in memoria (servizio nato a freddo da Auto) scriverebbe pos 0
+           e chiave vuota sopra il segnalibro buono: lascia stare */
+        if (frasi == null) return;
         try {
             getSharedPreferences("lettura", MODE_PRIVATE).edit()
                 .putInt("pos", pos)
@@ -1052,6 +1253,7 @@ public class ReadingService extends MediaBrowserServiceCompat {
     }
 
     private void refresh() {
+        if (distrutto) return; // mai riacquisire notifica/wake lock/focus dopo onDestroy
         String sub;
         int pg = pagineCorrente();
         ultimaPagina = pg;
@@ -1170,10 +1372,22 @@ public class ReadingService extends MediaBrowserServiceCompat {
 
     @Override
     public void onDestroy() {
-        instance = null;
+        distrutto = true;
+        try {
+            if (playing || attesaFocus) { // stava leggendo: segnalibro salvato e JS avvisato
+                playing = false;
+                attesaFocus = false;
+                gen++;
+                try { statFerma(); } catch (Throwable ignored) { }
+                salva();
+                LetturaServicePlugin.emit("stato", pos, false, chiave);
+            }
+        } catch (Throwable ignored) { }
+        if (instance == this) instance = null;
         try { unregisterReceiver(noisy); } catch (Throwable ignored) { }
         try { statFerma(); } catch (Throwable ignored) { }
-        try { main.removeCallbacks(timerRun); main.removeCallbacks(guardia); } catch (Throwable ignored) { }
+        // dopo il salvataggio: via tutte le lambda in coda (parla, avanzamenti, timer, guardia)
+        try { main.removeCallbacksAndMessages(null); } catch (Throwable ignored) { }
         try { if (tts != null) { tts.stop(); tts.shutdown(); tts = null; } } catch (Throwable ignored) { }
         try {
             if (Build.VERSION.SDK_INT >= 26 && afr != null) {

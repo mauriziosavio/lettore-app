@@ -26,12 +26,15 @@ import java.util.List;
 @CapacitorPlugin(name = "LetturaService")
 public class LetturaServicePlugin extends Plugin {
 
-    private static LetturaServicePlugin instance;
+    private static volatile LetturaServicePlugin instance;
 
     /* TTS di servizio del plugin: serve solo per elencare le voci e far sentire
-       l'anteprima quando si cambia voce da fermi (il motore vero vive nel servizio). */
-    private android.speech.tts.TextToSpeech vtts;
-    private boolean vttsPronto = false;
+       l'anteprima quando si cambia voce da fermi (il motore vero vive nel servizio).
+       Tutto lo stato qui sotto è protetto dal lock di vttsAttesa. */
+    private volatile android.speech.tts.TextToSpeech vtts;
+    private volatile boolean vttsPronto = false;
+    private boolean vttsAvvio = false;      // inizializzazione in corso
+    private boolean pluginDistrutto = false;
     private final List<Runnable> vttsAttesa = new ArrayList<>();
 
     @Override
@@ -41,26 +44,89 @@ public class LetturaServicePlugin extends Plugin {
 
     /** Esegue r quando il TTS di servizio è inizializzato (o subito, se fallisce). */
     private void conVoce(Runnable r) {
-        try {
-            if (vtts != null) {
-                if (vttsPronto) r.run(); else vttsAttesa.add(r);
-                return;
+        boolean subito = false, crea = false;
+        synchronized (vttsAttesa) {
+            if (vtts != null && vttsPronto) {
+                subito = true;
+            } else {
+                vttsAttesa.add(r);
+                if (!vttsAvvio) { vttsAvvio = true; crea = true; }
             }
-            vttsAttesa.add(r);
-            vtts = new android.speech.tts.TextToSpeech(getContext(), st -> {
-                vttsPronto = st == android.speech.tts.TextToSpeech.SUCCESS;
-                List<Runnable> coda = new ArrayList<>(vttsAttesa);
-                vttsAttesa.clear();
-                for (Runnable x : coda) { try { x.run(); } catch (Throwable ignored) { } }
-            });
-        } catch (Throwable t) {
-            List<Runnable> coda = new ArrayList<>(vttsAttesa);
-            vttsAttesa.clear();
-            for (Runnable x : coda) { try { x.run(); } catch (Throwable ignored) { } }
+        }
+        if (subito) { try { r.run(); } catch (Throwable ignored) { } return; }
+        if (!crea) return;
+        /* onInit può arrivare anche DENTRO il costruttore (motore non legabile), prima
+           che il riferimento sia assegnato: chi dei due arriva per secondo conclude */
+        final android.speech.tts.TextToSpeech[] creato = new android.speech.tts.TextToSpeech[1];
+        final int[] esito = new int[]{0}; // 0 = in attesa, 1 = pronto, 2 = fallito
+        try {
+            android.speech.tts.TextToSpeech t = new android.speech.tts.TextToSpeech(
+                getContext().getApplicationContext(), st -> {
+                    android.speech.tts.TextToSpeech fatto = null;
+                    boolean ok;
+                    synchronized (vttsAttesa) {
+                        esito[0] = st == android.speech.tts.TextToSpeech.SUCCESS ? 1 : 2;
+                        ok = esito[0] == 1;
+                        fatto = creato[0];
+                    }
+                    if (fatto != null) initVoceFinita(fatto, ok);
+                });
+            boolean giaConcluso;
+            boolean riuscito;
+            synchronized (vttsAttesa) {
+                creato[0] = t;
+                vtts = t;
+                giaConcluso = esito[0] != 0;
+                riuscito = esito[0] == 1;
+            }
+            if (giaConcluso) initVoceFinita(t, riuscito);
+        } catch (Throwable e) {
+            initVoceFinita(null, false);
         }
     }
 
+    /** Fine dell'inizializzazione del TTS di servizio: se fallita lo chiude e lo
+     *  dimentica (al prossimo uso si ritenta); poi esegue le richieste in attesa. */
+    private void initVoceFinita(android.speech.tts.TextToSpeech t, boolean ok) {
+        List<Runnable> coda;
+        boolean chiudi;
+        synchronized (vttsAttesa) {
+            vttsAvvio = false;
+            chiudi = !ok || t == null || pluginDistrutto;
+            if (!chiudi) {
+                vtts = t;
+                vttsPronto = true;
+            } else {
+                if (vtts == t) vtts = null;
+                vttsPronto = false;
+            }
+            coda = new ArrayList<>(vttsAttesa);
+            vttsAttesa.clear();
+        }
+        if (chiudi && t != null) { try { t.shutdown(); } catch (Throwable ignored) { } }
+        for (Runnable x : coda) { try { x.run(); } catch (Throwable ignored) { } }
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        android.speech.tts.TextToSpeech t;
+        synchronized (vttsAttesa) {
+            pluginDistrutto = true;
+            t = vtts;
+            vtts = null;
+            vttsPronto = false;
+        }
+        try { if (t != null) { t.stop(); t.shutdown(); } } catch (Throwable ignored) { }
+        if (instance == this) instance = null;
+        super.handleOnDestroy();
+    }
+
     static void emit(String azione, int i, boolean playing) {
+        emit(azione, i, playing, ReadingService.chiaveCorrente());
+    }
+
+    /** Ogni evento porta la chiave del libro caricato nel servizio: il JS ignora quelli di un altro libro. */
+    static void emit(String azione, int i, boolean playing, String chiave) {
         try {
             LetturaServicePlugin p = instance;
             if (p != null) {
@@ -68,6 +134,7 @@ public class LetturaServicePlugin extends Plugin {
                 o.put("azione", azione);
                 if (i >= 0) o.put("i", i);
                 o.put("playing", playing);
+                o.put("chiave", chiave != null ? chiave : "");
                 p.notifyListeners("mediaAction", o);
             }
         } catch (Throwable ignored) { }
@@ -82,6 +149,7 @@ public class LetturaServicePlugin extends Plugin {
                 o.put("azione", "parola");
                 o.put("i", i);
                 o.put("da", da);
+                o.put("chiave", ReadingService.chiaveCorrente());
                 p.notifyListeners("mediaAction", o);
             }
         } catch (Throwable ignored) { }
@@ -152,14 +220,17 @@ public class LetturaServicePlugin extends Plugin {
         call.resolve();
     }
 
-    /** {a: indice (-1 = invariato), rate: opzionale, leggi: true = avvia la voce}. */
+    /** {a: indice (-1 = invariato), rate: opzionale, leggi: true = avvia la voce,
+     *   chiave: opzionale, il libro a cui si riferisce (se diverso da quello nel servizio: ignorato)}. */
     @PluginMethod
     public void salta(PluginCall call) {
         try {
+            String chiave = call.getString("chiave", "");
             ReadingService.saltaStatica(getContext(),
                 call.getInt("a", -1),
                 call.getDouble("rate", 0.0).floatValue(),
-                Boolean.TRUE.equals(call.getBoolean("leggi", false)));
+                Boolean.TRUE.equals(call.getBoolean("leggi", false)),
+                chiave != null ? chiave : "");
         } catch (Throwable ignored) { }
         call.resolve();
     }
@@ -183,8 +254,9 @@ public class LetturaServicePlugin extends Plugin {
 
     @PluginMethod
     public void stop(PluginCall call) {
+        // fermaTutto() del servizio fa già pausa + stopForeground + stopSelf sul suo thread;
+        // uno stopService da qui poteva far cadere l'app ("did not then call startForeground")
         try { ReadingService.fermaStatica(); } catch (Throwable ignored) { }
-        try { getContext().stopService(new Intent(getContext(), ReadingService.class)); } catch (Throwable ignored) { }
         call.resolve();
     }
 
